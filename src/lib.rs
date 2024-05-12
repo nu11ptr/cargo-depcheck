@@ -55,7 +55,14 @@ impl Deps {
             }
         }
 
-        Ok(Self { deps })
+        let mut deps = Deps { deps };
+        deps.sort();
+        Ok(deps)
+    }
+
+    fn sort(&mut self) {
+        self.deps.values_mut().for_each(|dep| dep.sort());
+        self.deps.sort_unstable_keys();
     }
 
     fn find_top_level_dependents(
@@ -94,6 +101,7 @@ impl Deps {
         }
 
         next(&self.deps, pkg, &mut top_level_deps)?;
+        top_level_deps.sort_unstable();
         Ok(top_level_deps)
     }
 
@@ -178,6 +186,13 @@ impl Dep {
             Ok(None)
         }
     }
+
+    fn sort(&mut self) {
+        self.versions
+            .values_mut()
+            .for_each(|version| version.sort());
+        self.versions.sort_unstable_keys();
+    }
 }
 
 // *** Pkg ***
@@ -186,6 +201,20 @@ impl Dep {
 struct Package {
     name: Name,
     version: Version,
+}
+
+impl Ord for Package {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name
+            .cmp(&other.name)
+            .then_with(|| self.version.cmp(&other.version))
+    }
+}
+
+impl PartialOrd for Package {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl std::fmt::Display for Package {
@@ -224,6 +253,11 @@ impl DepVersion {
 
     fn add_dependent(&mut self, dependent: Package) {
         self.dependents.insert(dependent);
+    }
+
+    fn sort(&mut self) {
+        self.dependencies.sort_unstable();
+        self.dependents.sort_unstable();
     }
 }
 
