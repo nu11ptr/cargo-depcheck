@@ -1,0 +1,9 @@
+[package]
+name = "cargo-depcheck"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cargo-lock = "9"
+clap = { version = "4", features = ["derive"] }
+indexmap = "2"

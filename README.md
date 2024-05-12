@@ -1,2 +1,3 @@
-# cargo-depopt
- Cargo dependency optimizer
+# cargo-depcheck
+
+Cargo dependency checker
