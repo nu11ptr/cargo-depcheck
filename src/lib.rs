@@ -65,16 +65,17 @@ impl Deps {
         self.deps.sort_unstable_keys();
     }
 
-    fn find_top_level_dependents(
+    fn find_dependents(
         &self,
         pkg: &Package,
-    ) -> Result<IndexSet<Package>, Box<dyn std::error::Error>> {
-        let mut top_level_deps = IndexSet::new();
+    ) -> Result<IndexMap<Package, IndexSet<Package>>, Box<dyn std::error::Error>> {
+        let mut dependents = IndexMap::new();
 
         fn next(
             deps: &IndexMap<Name, Dep>,
             curr_pkg: &Package,
-            top_level_deps: &mut IndexSet<Package>,
+            dependents: &mut IndexMap<Package, IndexSet<Package>>,
+            direct_dep: Option<Package>,
         ) -> Result<(), String> {
             let dep = deps.get(&curr_pkg.name).ok_or(format!(
                 "Corrupted lock file: Dependency '{}' not found",
@@ -88,21 +89,28 @@ impl Deps {
 
             // If no dependents then we have found the top level
             if ver.dependents.is_empty() {
-                top_level_deps.insert(curr_pkg.clone());
+                let direct_dep = direct_dep.unwrap_or_else(|| curr_pkg.clone());
+                let top_level_set = dependents.entry(direct_dep.clone()).or_default();
+
+                if curr_pkg != &direct_dep {
+                    top_level_set.insert(curr_pkg.clone());
+                }
+                // dependents.insert(curr_pkg.clone());
                 return Ok(());
             // If it has dependents then we need to recurse higher up the tree
             } else {
                 for dependent in &ver.dependents {
-                    next(deps, dependent, top_level_deps)?;
+                    let direct_dep = direct_dep.clone().or_else(|| Some(dependent.clone()));
+                    next(deps, dependent, dependents, direct_dep)?;
                 }
             }
 
             Ok::<_, String>(())
         }
 
-        next(&self.deps, pkg, &mut top_level_deps)?;
-        top_level_deps.sort_unstable();
-        Ok(top_level_deps)
+        next(&self.deps, pkg, &mut dependents, None)?;
+        dependents.values_mut().for_each(|set| set.sort_unstable());
+        Ok(dependents)
     }
 
     pub fn duplicate_versions(&self) -> Result<Vec<DuplicateDep>, Box<dyn std::error::Error>> {
@@ -173,8 +181,8 @@ impl Dep {
                         name: self.name.clone(),
                         version: ver.version.clone(),
                     };
-                    let top_level_dependents = deps.find_top_level_dependents(&pkg)?;
-                    Ok::<_, Box<dyn std::error::Error>>((ver.version.clone(), top_level_dependents))
+                    let dependents = deps.find_dependents(&pkg)?;
+                    Ok::<_, Box<dyn std::error::Error>>((ver.version.clone(), dependents))
                 })
                 .collect::<Result<IndexMap<_, _>, _>>()?;
 
@@ -278,18 +286,22 @@ impl Hash for DepVersion {
 #[derive(Debug)]
 pub struct DuplicateDep {
     name: Name,
-    versions: IndexMap<Version, IndexSet<Package>>,
+    versions: IndexMap<Version, IndexMap<Package, IndexSet<Package>>>,
 }
 
 impl std::fmt::Display for DuplicateDep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{}:", self.name)?;
 
-        for (version, dependents) in &self.versions {
+        for (version, direct_deps) in &self.versions {
             writeln!(f, "  {}:", version)?;
 
-            for dependent in dependents {
-                writeln!(f, "    {}", dependent)?;
+            for (direct, top_level_deps) in direct_deps {
+                writeln!(f, "    {}", direct)?;
+
+                for top_level in top_level_deps {
+                    writeln!(f, "      {}", top_level)?;
+                }
             }
         }
 
