@@ -4,9 +4,13 @@ use clap::Parser;
 use cargo_depcheck::{Deps, DuplicateDep};
 
 #[derive(Parser)]
-#[command(name = "cargo")]
-#[command(bin_name = "cargo")]
-#[command(version, about, long_about = None)]
+#[command(bin_name = "cargo depcheck")]
+#[command(
+    version,
+    about = "Check for duplicate dependencies in Cargo.lock",
+    long_about = None,
+    styles = clap_cargo::style::CLAP_STYLING
+)]
 struct CargoCli {
     /// Path to Cargo.lock
     #[arg(long, short)]
