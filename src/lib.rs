@@ -24,11 +24,12 @@ impl Deps {
                 // Already present by being a dependency of another package
                 Entry::Occupied(mut entry) => {
                     let dep: &mut Dep = entry.get_mut();
+                    dep.top_level = package.source.is_none();
                     dep.add_modify_ver_dependencies(package.version.clone(), &package.dependencies);
                 }
                 // First time seeing this package
                 Entry::Vacant(entry) => {
-                    let mut dep = Dep::new(package.name.clone());
+                    let mut dep = Dep::new(package.name.clone(), package.source.is_none());
                     dep.add_modify_ver_dependencies(package.version.clone(), &package.dependencies);
                     entry.insert(dep);
                 }
@@ -47,7 +48,8 @@ impl Deps {
                         dep.add_modify_ver_dependent(dependency.version, dependent);
                     }
                     Entry::Vacant(entry) => {
-                        let mut dep = Dep::new(dependency.name.clone());
+                        // Assume not a top level package since we don't have that info right now
+                        let mut dep = Dep::new(dependency.name.clone(), false);
                         dep.add_modify_ver_dependent(dependency.version, dependent);
                         entry.insert(dep);
                     }
@@ -74,8 +76,9 @@ impl Deps {
         fn next(
             deps: &IndexMap<Name, Dep>,
             curr_pkg: &Package,
+            prev_pkg: &Package,
+            direct_dep_pkg: Option<Package>,
             dependents: &mut IndexMap<Package, IndexSet<Package>>,
-            direct_dep: Option<Package>,
         ) -> Result<(), String> {
             let dep = deps.get(&curr_pkg.name).ok_or(format!(
                 "Corrupted lock file: Dependency '{}' not found",
@@ -87,28 +90,42 @@ impl Deps {
                 curr_pkg.version, curr_pkg.name
             ))?;
 
-            // If no dependents then we have found the top level
-            if ver.dependents.is_empty() {
-                let direct_dep = direct_dep.unwrap_or_else(|| curr_pkg.clone());
-                let top_level_set = dependents.entry(direct_dep.clone()).or_default();
+            // If a local project or no dependents then we have found the top level
+            if dep.top_level || ver.dependents.is_empty() {
+                let direct_dep_pkg = direct_dep_pkg.unwrap_or_else(|| curr_pkg.clone());
+                let top_level_set = dependents.entry(direct_dep_pkg.clone()).or_default();
 
-                if curr_pkg != &direct_dep {
-                    top_level_set.insert(curr_pkg.clone());
+                let direct_dep = deps.get(&direct_dep_pkg.name).ok_or(format!(
+                    "Corrupted lock file: Dependency '{}' not found",
+                    curr_pkg.name
+                ))?;
+
+                // If top level is part of our local project then it doesn't tell us much
+                // so we use the previous package as the top level (unless it is top_level itself)
+                let top_level_dep = if dep.top_level && !direct_dep.top_level {
+                    prev_pkg.clone()
+                } else {
+                    curr_pkg.clone()
+                };
+
+                // Don't insert top level dependent if same as direct dependent
+                if top_level_dep != direct_dep_pkg {
+                    top_level_set.insert(top_level_dep);
                 }
-                // dependents.insert(curr_pkg.clone());
+
                 return Ok(());
             // If it has dependents then we need to recurse higher up the tree
             } else {
                 for dependent in &ver.dependents {
-                    let direct_dep = direct_dep.clone().or_else(|| Some(dependent.clone()));
-                    next(deps, dependent, dependents, direct_dep)?;
+                    let direct_dep = direct_dep_pkg.clone().or_else(|| Some(dependent.clone()));
+                    next(deps, dependent, curr_pkg, direct_dep, dependents)?;
                 }
             }
 
             Ok::<_, String>(())
         }
 
-        next(&self.deps, pkg, &mut dependents, None)?;
+        next(&self.deps, pkg, pkg, None, &mut dependents)?;
         dependents.values_mut().for_each(|set| set.sort_unstable());
         Ok(dependents)
     }
@@ -129,13 +146,15 @@ impl Deps {
 #[derive(Debug)]
 struct Dep {
     name: Name,
+    top_level: bool,
     versions: IndexMap<Version, DepVersion>,
 }
 
 impl Dep {
-    pub fn new(name: Name) -> Self {
+    pub fn new(name: Name, top_level: bool) -> Self {
         Self {
             name,
+            top_level,
             versions: IndexMap::new(),
         }
     }
