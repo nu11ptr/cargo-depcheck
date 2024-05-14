@@ -117,8 +117,8 @@ impl Deps {
             // If it has dependents then we need to recurse higher up the tree
             } else {
                 for dependent in &ver.dependents {
-                    let direct_dep = direct_dep_pkg.clone().or_else(|| Some(dependent.clone()));
-                    next(deps, dependent, curr_pkg, direct_dep, dependents)?;
+                    let direct_dep_pkg = direct_dep_pkg.clone().or_else(|| Some(dependent.clone()));
+                    next(deps, dependent, curr_pkg, direct_dep_pkg, dependents)?;
                 }
             }
 
