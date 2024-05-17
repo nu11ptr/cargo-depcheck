@@ -11,7 +11,7 @@ pub struct Deps {
 }
 
 impl Deps {
-    pub fn from_lock_file(lock_file: Lockfile) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_lock_file(lock_file: Lockfile) -> Result<Self, String> {
         let mut deps = IndexMap::with_capacity(lock_file.packages.len());
 
         // I can't find any examples of non-v3 lock files, so I'm not sure if this is necessary
@@ -20,17 +20,26 @@ impl Deps {
         }
 
         for package in lock_file.packages {
+            let top_level = package.source.is_none();
+
             match deps.entry(package.name.clone()) {
                 // Already present by being a dependency of another package
                 Entry::Occupied(mut entry) => {
                     let dep: &mut Dep = entry.get_mut();
-                    dep.top_level = package.source.is_none();
-                    dep.add_modify_ver_dependencies(package.version.clone(), &package.dependencies);
+                    dep.add_modify_ver_dependencies(
+                        package.version.clone(),
+                        top_level,
+                        &package.dependencies,
+                    );
                 }
                 // First time seeing this package
                 Entry::Vacant(entry) => {
-                    let mut dep = Dep::new(package.name.clone(), package.source.is_none());
-                    dep.add_modify_ver_dependencies(package.version.clone(), &package.dependencies);
+                    let mut dep = Dep::new(package.name.clone());
+                    dep.add_modify_ver_dependencies(
+                        package.version.clone(),
+                        top_level,
+                        &package.dependencies,
+                    );
                     entry.insert(dep);
                 }
             }
@@ -42,102 +51,106 @@ impl Deps {
                     version: package.version.clone(),
                 };
 
+                let top_level = dependency.source.is_none();
+
                 match deps.entry(dependency.name.clone()) {
                     Entry::Occupied(mut entry) => {
                         let dep: &mut Dep = entry.get_mut();
-                        dep.add_modify_ver_dependent(dependency.version, dependent);
+                        dep.add_modify_ver_dependent(dependency.version, top_level, dependent);
                     }
                     Entry::Vacant(entry) => {
                         // Assume not a top level package since we don't have that info right now
-                        let mut dep = Dep::new(dependency.name.clone(), false);
-                        dep.add_modify_ver_dependent(dependency.version, dependent);
+                        let mut dep = Dep::new(dependency.name.clone());
+                        dep.add_modify_ver_dependent(dependency.version, top_level, dependent);
                         entry.insert(dep);
                     }
                 }
             }
         }
 
-        let mut deps = Deps { deps };
-        deps.sort();
-        Ok(deps)
+        deps.values_mut().for_each(|dep| dep.sort());
+        deps.sort_unstable_keys();
+        Ok(Deps { deps })
     }
 
-    fn sort(&mut self) {
-        self.deps.values_mut().for_each(|dep| dep.sort());
-        self.deps.sort_unstable_keys();
+    fn get_version(&self, pkg: &Package) -> Result<&DepVersion, String> {
+        let dep = self.deps.get(&pkg.name).ok_or(format!(
+            "Corrupted lock file: Dependency '{}' not found",
+            pkg.name
+        ))?;
+
+        dep.versions.get(&pkg.version).ok_or(format!(
+            "Corrupted lock file: Version '{}' of '{}' not found",
+            pkg.version, pkg.name
+        ))
     }
 
-    fn find_dependents(
-        &self,
-        pkg: &Package,
-    ) -> Result<IndexMap<Package, IndexSet<Package>>, Box<dyn std::error::Error>> {
-        let mut dependents = IndexMap::new();
-
-        fn next(
-            deps: &IndexMap<Name, Dep>,
-            curr_pkg: &Package,
-            prev_pkg: &Package,
-            direct_dep_pkg: Option<Package>,
-            dependents: &mut IndexMap<Package, IndexSet<Package>>,
-        ) -> Result<(), String> {
-            let dep = deps.get(&curr_pkg.name).ok_or(format!(
-                "Corrupted lock file: Dependency '{}' not found",
-                curr_pkg.name
-            ))?;
-
-            let ver = dep.versions.get(&curr_pkg.version).ok_or(format!(
-                "Corrupted lock file: Version '{}' of '{}' not found",
-                curr_pkg.version, curr_pkg.name
-            ))?;
-
-            // If a local project or no dependents then we have found the top level
-            if dep.top_level || ver.dependents.is_empty() {
-                let direct_dep_pkg = direct_dep_pkg.unwrap_or_else(|| curr_pkg.clone());
-                let top_level_set = dependents.entry(direct_dep_pkg.clone()).or_default();
-
-                let direct_dep = deps.get(&direct_dep_pkg.name).ok_or(format!(
-                    "Corrupted lock file: Dependency '{}' not found",
-                    curr_pkg.name
-                ))?;
-
-                // If top level is part of our local project then it doesn't tell us much
-                // so we use the previous package as the top level (unless it is top_level itself)
-                let top_level_dep = if dep.top_level && !direct_dep.top_level {
-                    prev_pkg.clone()
-                } else {
-                    curr_pkg.clone()
-                };
-
-                // Don't insert top level dependent if same as direct dependent
-                if top_level_dep != direct_dep_pkg {
-                    top_level_set.insert(top_level_dep);
-                }
-
-                return Ok(());
-            // If it has dependents then we need to recurse higher up the tree
-            } else {
-                for dependent in &ver.dependents {
-                    let direct_dep_pkg = direct_dep_pkg.clone().or_else(|| Some(dependent.clone()));
-                    next(deps, dependent, curr_pkg, direct_dep_pkg, dependents)?;
-                }
-            }
-
-            Ok::<_, String>(())
-        }
-
-        next(&self.deps, pkg, pkg, None, &mut dependents)?;
-        dependents.values_mut().for_each(|set| set.sort_unstable());
-        Ok(dependents)
-    }
-
-    pub fn duplicate_versions(&self) -> Result<Vec<DuplicateDep>, Box<dyn std::error::Error>> {
-        let dup_versions = self
+    pub fn build_dup_dep_results(&self, verbose: bool) -> Result<DupDepResults, String> {
+        let multi_ver_deps: IndexMap<_, _> = self
             .deps
             .values()
-            .map(|dep| dep.duplicate_versions(self))
-            .collect::<Result<Vec<_>, _>>()?;
+            .filter_map(|dep| {
+                if dep.has_multiple_versions() {
+                    Some((
+                        dep.name.clone(),
+                        MultiVerDep::new(dep.name.clone(), dep.versions()),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        Ok(dup_versions.into_iter().flatten().collect())
+        let mut multi_ver_parents = MultiVerParents::default();
+
+        for (name, mv_dep) in &multi_ver_deps {
+            for version in mv_dep.versions.keys() {
+                let pkg = Package {
+                    name: name.clone(),
+                    version: version.clone(),
+                };
+                self.build_multi_ver_parents(&pkg, &mut multi_ver_parents)?;
+            }
+        }
+
+        DupDepResults::from_multi_ver_deps_parents(
+            multi_ver_deps,
+            &multi_ver_parents,
+            verbose,
+            self,
+        )
+    }
+
+    fn build_multi_ver_parents(
+        &self,
+        pkg: &Package,
+        parents: &mut MultiVerParents,
+    ) -> Result<(), String> {
+        fn next(
+            pkg: &Package,
+            curr_pkg: &Package,
+            deps: &Deps,
+            parents: &mut MultiVerParents,
+        ) -> Result<(), String> {
+            let ver = deps.get_version(curr_pkg)?;
+
+            if pkg != curr_pkg {
+                parents.add(
+                    curr_pkg.name.clone(),
+                    curr_pkg.version.clone(),
+                    pkg.name.clone(),
+                    pkg.version.clone(),
+                );
+            }
+
+            for dependent in &ver.dependents {
+                next(pkg, dependent, deps, parents)?;
+            }
+
+            Ok(())
+        }
+
+        next(pkg, pkg, self, parents)
     }
 }
 
@@ -146,71 +159,60 @@ impl Deps {
 #[derive(Debug)]
 struct Dep {
     name: Name,
-    top_level: bool,
     versions: IndexMap<Version, DepVersion>,
 }
 
 impl Dep {
-    pub fn new(name: Name, top_level: bool) -> Self {
+    pub fn new(name: Name) -> Self {
         Self {
             name,
-            top_level,
             versions: IndexMap::new(),
         }
     }
 
-    pub fn add_modify_ver_dependencies(&mut self, version: Version, deps: &[Dependency]) {
+    pub fn has_multiple_versions(&self) -> bool {
+        self.versions.len() > 1
+    }
+
+    pub fn versions(&self) -> IndexSet<Version> {
+        self.versions.keys().cloned().collect()
+    }
+
+    pub fn add_modify_ver_dependencies(
+        &mut self,
+        version: Version,
+        top_level: bool,
+        deps: &[Dependency],
+    ) {
         match self.versions.entry(version.clone()) {
             Entry::Occupied(mut entry) => {
                 let version = entry.get_mut();
                 version.add_dependencies(deps);
             }
             Entry::Vacant(entry) => {
-                let mut version = DepVersion::new(version);
+                let mut version = DepVersion::new(version, top_level);
                 version.add_dependencies(deps);
                 entry.insert(version);
             }
         }
     }
 
-    pub fn add_modify_ver_dependent(&mut self, version: Version, dependent: Package) {
+    pub fn add_modify_ver_dependent(
+        &mut self,
+        version: Version,
+        top_level: bool,
+        dependent: Package,
+    ) {
         match self.versions.entry(version.clone()) {
             Entry::Occupied(mut entry) => {
                 let version = entry.get_mut();
                 version.add_dependent(dependent);
             }
             Entry::Vacant(entry) => {
-                let mut version = DepVersion::new(version);
+                let mut version = DepVersion::new(version, top_level);
                 version.add_dependent(dependent);
                 entry.insert(version);
             }
-        }
-    }
-
-    pub fn duplicate_versions(
-        &self,
-        deps: &Deps,
-    ) -> Result<Option<DuplicateDep>, Box<dyn std::error::Error>> {
-        if self.versions.len() > 1 {
-            let versions = self
-                .versions
-                .values()
-                .map(|ver| {
-                    let pkg = Package {
-                        name: self.name.clone(),
-                        version: ver.version.clone(),
-                    };
-                    let dependents = deps.find_dependents(&pkg)?;
-                    Ok::<_, Box<dyn std::error::Error>>((ver.version.clone(), dependents))
-                })
-                .collect::<Result<IndexMap<_, _>, _>>()?;
-
-            Ok(Some(DuplicateDep {
-                name: self.name.clone(),
-                versions,
-            }))
-        } else {
-            Ok(None)
         }
     }
 
@@ -257,15 +259,21 @@ struct DepVersion {
     version: Version,
     dependencies: IndexSet<Package>,
     dependents: IndexSet<Package>,
+    top_level: bool,
 }
 
 impl DepVersion {
-    pub fn new(version: Version) -> Self {
+    pub fn new(version: Version, top_level: bool) -> Self {
         Self {
             version,
             dependencies: IndexSet::new(),
             dependents: IndexSet::new(),
+            top_level,
         }
+    }
+
+    pub fn is_top_level(&self) -> bool {
+        self.top_level || self.dependents.is_empty()
     }
 
     pub fn add_dependencies(&mut self, deps: &[cargo_lock::Dependency]) {
@@ -288,42 +296,467 @@ impl DepVersion {
     }
 }
 
-impl PartialEq for DepVersion {
-    fn eq(&self, other: &Self) -> bool {
-        self.version == other.version
+// *** MultiVerDeps ***
+
+#[derive(Default)]
+struct MultiVerDeps {
+    deps: IndexMap<Name, IndexSet<Version>>,
+}
+
+impl MultiVerDeps {
+    pub fn add(&mut self, name: Name, version: Version) {
+        self.deps.entry(name).or_default().insert(version);
+    }
+
+    pub fn multi_ver_iter(&self) -> impl Iterator<Item = (&Name, &IndexSet<Version>)> {
+        self.deps.iter().filter(|(_, versions)| versions.len() > 1)
+    }
+
+    pub fn has_all(&self, name: &Name, versions: &IndexSet<Version>) -> bool {
+        match self.deps.get(name) {
+            Some(dep_versions) => dep_versions.is_superset(versions),
+            None => false,
+        }
     }
 }
 
-impl Hash for DepVersion {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.version.hash(state);
+// *** MultiVerParents ***
+
+#[derive(Default)]
+struct MultiVerParents {
+    parents: IndexMap<Name, IndexMap<Version, MultiVerDeps>>,
+}
+
+impl MultiVerParents {
+    pub fn add(&mut self, parent_name: Name, parent_ver: Version, name: Name, ver: Version) {
+        self.parents
+            .entry(parent_name)
+            .or_default()
+            .entry(parent_ver)
+            .or_default()
+            .add(name, ver);
+    }
+
+    pub fn get_multi_ver_deps(&self, name: &Name, ver: &Version) -> Option<&MultiVerDeps> {
+        self.parents.get(name)?.get(ver)
     }
 }
 
-// *** DuplicateDep ***
+// *** TopLevelParents ***
 
-#[derive(Debug)]
-pub struct DuplicateDep {
+#[derive(Default)]
+struct TopLevelPackages(IndexSet<Package>);
+
+impl TopLevelPackages {
+    fn add(&mut self, top_level: Package) {
+        self.0.insert(top_level);
+    }
+}
+
+impl std::fmt::Display for TopLevelPackages {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for pkg in &self.0 {
+            writeln!(f, "        {pkg}")?;
+        }
+
+        Ok(())
+    }
+}
+
+// *** TopLevelDependencies ***
+
+#[derive(Default)]
+struct TopLevelDependencies(IndexMap<Package, TopLevelPackages>);
+
+impl TopLevelDependencies {
+    fn add(&mut self, top_level_dep: Package) -> &mut TopLevelPackages {
+        self.0.entry(top_level_dep).or_default()
+    }
+}
+
+impl std::fmt::Display for TopLevelDependencies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (direct, top_level) in self.0.iter() {
+            writeln!(f, "      {direct}\n{top_level}")?;
+        }
+
+        Ok(())
+    }
+}
+
+// *** DependencyParents ***
+
+#[derive(Default)]
+pub struct DependencyParents(IndexMap<Package, TopLevelDependencies>);
+
+impl DependencyParents {
+    fn add(&mut self, direct: Package) -> &mut TopLevelDependencies {
+        self.0.entry(direct).or_default()
+    }
+}
+
+impl std::fmt::Display for DependencyParents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (direct, top_level_deps) in self.0.iter() {
+            writeln!(f, "    {direct}\n{top_level_deps}")?;
+        }
+
+        Ok(())
+    }
+}
+
+// *** MultiVerDep ***
+
+pub struct MultiVerDep {
     name: Name,
-    versions: IndexMap<Version, IndexMap<Package, IndexSet<Package>>>,
+    versions: IndexMap<Version, DependencyParents>,
 }
 
-impl std::fmt::Display for DuplicateDep {
+impl MultiVerDep {
+    pub fn new(name: Name, versions: IndexSet<Version>) -> Self {
+        Self {
+            name,
+            versions: versions
+                .into_iter()
+                .map(|ver| (ver, DependencyParents::default()))
+                .collect(),
+        }
+    }
+
+    pub fn add_parents(&mut self, version: Version, direct_and_top_level: DependencyParents) {
+        self.versions.insert(version, direct_and_top_level);
+    }
+}
+
+impl std::fmt::Display for MultiVerDep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{}:", self.name)?;
 
-        for (version, direct_deps) in &self.versions {
-            writeln!(f, "  {}:", version)?;
+        for (version, direct_and_top_level) in self.versions.iter() {
+            writeln!(f, "  {version}:")?;
+            write!(f, "{}", direct_and_top_level)?;
+        }
 
-            for (direct, top_level_deps) in direct_deps {
-                writeln!(f, "    {}", direct)?;
+        Ok(())
+    }
+}
 
-                for top_level in top_level_deps {
-                    writeln!(f, "      {}", top_level)?;
-                }
+// *** ParentDepResponsibility ***
+
+/// Tracks direct and indirect multi version depencency responsibility for a given package
+struct ParentDepResponsibility {
+    /// Name and version of the package that has multiple versions
+    package: Package,
+
+    /// Packages that have multiple versions this package is directly responsible for including
+    direct: IndexSet<Name>,
+
+    /// Packages that have multiple versions this package is indirectly responsible for (by including
+    /// a package that itself has direct/indirect multi version responsibilities)
+    indirect: IndexSet<Name>,
+
+    verbose: bool,
+}
+
+impl std::fmt::Display for ParentDepResponsibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "{} (direct: {}, indirect: {})",
+            self.package,
+            self.direct.len(),
+            self.indirect.len()
+        )?;
+
+        if self.verbose {
+            writeln!(f, "  Direct:")?;
+            for name in &self.direct {
+                writeln!(f, "    {name}")?;
+            }
+
+            writeln!(f, "  Indirect:")?;
+            for name in &self.direct {
+                writeln!(f, "    {name}")?;
             }
         }
 
         Ok(())
+    }
+}
+
+impl ParentDepResponsibility {
+    pub fn new(package: Package, verbose: bool) -> Self {
+        Self {
+            package,
+            direct: IndexSet::new(),
+            indirect: IndexSet::new(),
+            verbose,
+        }
+    }
+
+    pub fn add_direct(&mut self, name: Name) {
+        self.direct.insert(name);
+    }
+
+    pub fn add_indirect(&mut self, name: Name) {
+        self.indirect.insert(name);
+    }
+
+    pub fn has_direct_responsibilities(&self) -> bool {
+        !self.direct.is_empty()
+    }
+
+    pub fn has_indirect_responsibilities(&self) -> bool {
+        !self.indirect.is_empty()
+    }
+
+    pub fn has_responsibilities(&self) -> bool {
+        self.has_direct_responsibilities() || self.has_indirect_responsibilities()
+    }
+}
+
+// *** DupDepResponsibilities ***
+
+struct ParentDepResponsibilities(IndexMap<Package, ParentDepResponsibility>);
+
+impl std::fmt::Display for ParentDepResponsibilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for responsible in self.0.values() {
+            write!(f, "{responsible}")?;
+        }
+
+        Ok(())
+    }
+}
+
+impl ParentDepResponsibilities {
+    pub fn has_direct_responsibilities(&self) -> bool {
+        self.0
+            .values()
+            .any(|responsible| responsible.has_direct_responsibilities())
+    }
+
+    pub fn has_indirect_responsibilities(&self) -> bool {
+        self.0
+            .values()
+            .any(|responsible| responsible.has_indirect_responsibilities())
+    }
+
+    pub fn has_responsibilities(&self) -> bool {
+        self.0
+            .values()
+            .any(|responsible| responsible.has_responsibilities())
+    }
+}
+
+// *** DupDepResults ***
+
+pub struct DupDepResults {
+    /// Top level packages that have multiple versions of dependencies
+    top_level: ParentDepResponsibilities,
+
+    /// Dependency packages that have multiple versions of dependencies
+    deps: ParentDepResponsibilities,
+
+    // Dependencies that have multiple versions and their associated direct and top level dependents
+    multi_ver_deps: IndexMap<Name, MultiVerDep>,
+
+    verbose: bool,
+}
+
+impl std::fmt::Display for DupDepResults {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.top_level.has_responsibilities() {
+            writeln!(f, "Top level responsibilities:")?;
+            writeln!(f, "{}\n", self.top_level)?;
+        }
+
+        if self.deps.has_responsibilities() {
+            writeln!(f, "Dependency responsibilities:")?;
+            writeln!(f, "{}\n", self.deps)?;
+        }
+
+        for multi_ver_dep in self.multi_ver_deps.values() {
+            writeln!(f, "{multi_ver_dep}")?;
+        }
+
+        Ok(())
+    }
+}
+
+impl DupDepResults {
+    fn from_multi_ver_deps_parents(
+        mut multi_ver_deps: IndexMap<Name, MultiVerDep>,
+        parents: &MultiVerParents,
+        verbose: bool,
+        deps: &Deps,
+    ) -> Result<Self, String> {
+        let mut top_level_responsible = IndexMap::new();
+        let mut direct_responsible = IndexMap::new();
+
+        for (name, mv_dep) in &mut multi_ver_deps {
+            for (version, dt_parents) in mv_dep.versions.iter_mut() {
+                let pkg = Package {
+                    name: name.clone(),
+                    version: version.clone(),
+                };
+
+                Self::process_multi_ver_dep(
+                    &pkg,
+                    dt_parents,
+                    &mut top_level_responsible,
+                    &mut direct_responsible,
+                    parents,
+                    deps,
+                    verbose,
+                )?;
+            }
+        }
+
+        Ok(Self {
+            top_level: ParentDepResponsibilities(top_level_responsible),
+            deps: ParentDepResponsibilities(direct_responsible),
+            multi_ver_deps,
+            verbose,
+        })
+    }
+
+    fn process_multi_ver_dep(
+        pkg: &Package,
+        dt_parents: &mut DependencyParents,
+        top_level_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
+        direct_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
+        parents: &MultiVerParents,
+        deps: &Deps,
+        verbose: bool,
+    ) -> Result<(), String> {
+        fn next(
+            curr_pkg: &Package,
+            prev_pkg: &Package,
+            multi_ver_pkg: &Package,
+            direct_tl_dep_pkg: Option<(&Package, Option<(&Package, Option<&Package>)>)>,
+            dt_parents: &mut DependencyParents,
+            top_level_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
+            direct_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
+            parents: &MultiVerParents,
+            deps: &Deps,
+            verbose: bool,
+        ) -> Result<(), String> {
+            let dep_ver = deps.get_version(curr_pkg)?;
+            let top_level = dep_ver.is_top_level();
+
+            let entry = if top_level {
+                top_level_responsible.entry(curr_pkg.clone())
+            } else {
+                direct_responsible.entry(curr_pkg.clone())
+            };
+
+            // This package may have been processed already by another multi version dependency
+            if let Entry::Vacant(entry) = entry {
+                // Multi version deps if bottom rung may not themselves have this structure
+                if let Some(multi_ver_deps) =
+                    parents.get_multi_ver_deps(&curr_pkg.name, &curr_pkg.version)
+                {
+                    let mut parent_multi_ver_deps =
+                        ParentDepResponsibility::new(curr_pkg.clone(), verbose);
+
+                    // We only iterate over the dep if this immediate parent has multiple versions downstream
+                    for (name, versions) in multi_ver_deps.multi_ver_iter() {
+                        // Find out if any of our dependencies have all the versions
+                        let has_all = dep_ver
+                            .dependencies
+                            .iter()
+                            .filter_map(|dep| parents.get_multi_ver_deps(&dep.name, &dep.version))
+                            .any(|deps| deps.has_all(name, versions));
+
+                        // If any single depedency has all the versions then we are only indirectly responsible else directly responsible
+                        if has_all {
+                            parent_multi_ver_deps.add_indirect(name.clone());
+                        } else {
+                            parent_multi_ver_deps.add_direct(name.clone());
+                        }
+                    }
+
+                    entry.insert(parent_multi_ver_deps);
+                }
+            }
+
+            if top_level {
+                let (direct_tl_dep_pkg, store) = match direct_tl_dep_pkg {
+                    // Most typical case. curr_pkg != prev_pkg. direct_pkg may or may not equal prev_pkg
+                    Some((direct_pkg, None)) => {
+                        // if true, our hierarchy is more than 2 levels deep
+                        let pkg_deps = if direct_pkg != curr_pkg {
+                            // if true, our hierarchy is more than 3 levels deep
+                            if direct_pkg != prev_pkg {
+                                Some((direct_pkg, Some((prev_pkg, Some(curr_pkg)))))
+                            } else {
+                                Some((direct_pkg, Some((curr_pkg, None))))
+                            }
+                        } else {
+                            Some((curr_pkg, None))
+                        };
+
+                        (pkg_deps, true)
+                    }
+
+                    // This occurs when we have a top level package that also has top level dependents
+                    // We are already done at this point
+                    pkg_deps @ Some((_, Some(_))) => (pkg_deps, false),
+
+                    // This only happens if a single level with no dependents (curr_pkg == prev_pkg == dependent_pkg)
+                    None => (Some((curr_pkg, None)), true),
+                };
+
+                // If storing, store one level at a time based on how many levels we built
+                if store {
+                    if let Some((direct, rest)) = direct_tl_dep_pkg {
+                        let top_level_deps = dt_parents.add(direct.clone());
+
+                        if let Some((top_level_dep, rest)) = rest {
+                            let top_level = top_level_deps.add(top_level_dep.clone());
+
+                            if let Some(top_level_pkg) = rest {
+                                top_level.add(top_level_pkg.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Keep processing up stream until we reach the top level
+            for dependent_pkg in &dep_ver.dependents {
+                // If direct dep isn't yet set then it is the dependent we are about to process
+                let direct_tl_dep_pkg = direct_tl_dep_pkg.or(Some((dependent_pkg, None)));
+
+                next(
+                    dependent_pkg,
+                    curr_pkg,
+                    multi_ver_pkg,
+                    direct_tl_dep_pkg,
+                    dt_parents,
+                    top_level_responsible,
+                    direct_responsible,
+                    parents,
+                    deps,
+                    verbose,
+                )?;
+            }
+
+            Ok(())
+        }
+
+        next(
+            pkg,
+            pkg,
+            pkg,
+            None,
+            dt_parents,
+            top_level_responsible,
+            direct_responsible,
+            parents,
+            deps,
+            verbose,
+        )
     }
 }
