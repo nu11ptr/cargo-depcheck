@@ -32,8 +32,12 @@ fn main() {
     let cli = CargoCli::parse();
 
     match load_and_process_lock_file(cli.lock_path, false) {
-        Ok(dup_dep_results) => {
+        Ok(dup_dep_results) if !dup_dep_results.is_empty() => {
             println!("{dup_dep_results}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            println!("No duplicate dependencies found.");
         }
         Err(e) => {
             eprintln!("Error: {}", e);

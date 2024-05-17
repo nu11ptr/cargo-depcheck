@@ -68,8 +68,6 @@ impl Deps {
             }
         }
 
-        deps.values_mut().for_each(|dep| dep.sort());
-        deps.sort_unstable_keys();
         Ok(Deps { deps })
     }
 
@@ -215,13 +213,6 @@ impl Dep {
             }
         }
     }
-
-    fn sort(&mut self) {
-        self.versions
-            .values_mut()
-            .for_each(|version| version.sort());
-        self.versions.sort_unstable_keys();
-    }
 }
 
 // *** Pkg ***
@@ -289,11 +280,6 @@ impl DepVersion {
     fn add_dependent(&mut self, dependent: Package) {
         self.dependents.insert(dependent);
     }
-
-    fn sort(&mut self) {
-        self.dependencies.sort_unstable();
-        self.dependents.sort_unstable();
-    }
 }
 
 // *** MultiVerDeps ***
@@ -356,7 +342,7 @@ impl TopLevelPackages {
 impl std::fmt::Display for TopLevelPackages {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for pkg in &self.0 {
-            writeln!(f, "        {pkg}")?;
+            writeln!(f, "          {pkg}")?;
         }
 
         Ok(())
@@ -377,7 +363,8 @@ impl TopLevelDependencies {
 impl std::fmt::Display for TopLevelDependencies {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (direct, top_level) in self.0.iter() {
-            writeln!(f, "      {direct}\n{top_level}")?;
+            writeln!(f, "        {direct}")?;
+            writeln!(f, "{top_level}")?;
         }
 
         Ok(())
@@ -398,7 +385,8 @@ impl DependencyParents {
 impl std::fmt::Display for DependencyParents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (direct, top_level_deps) in self.0.iter() {
-            writeln!(f, "    {direct}\n{top_level_deps}")?;
+            writeln!(f, "      {direct}")?;
+            write!(f, "{top_level_deps}")?;
         }
 
         Ok(())
@@ -433,8 +421,8 @@ impl std::fmt::Display for MultiVerDep {
         writeln!(f, "{}:", self.name)?;
 
         for (version, direct_and_top_level) in self.versions.iter() {
-            writeln!(f, "  {version}:")?;
-            write!(f, "{}", direct_and_top_level)?;
+            writeln!(f, "    {version}:")?;
+            write!(f, "{direct_and_top_level}")?;
         }
 
         Ok(())
@@ -462,21 +450,25 @@ impl std::fmt::Display for ParentDepResponsibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} (direct: {}, indirect: {})",
+            "  {} (direct: {}, indirect: {})",
             self.package,
             self.direct.len(),
             self.indirect.len()
         )?;
 
         if self.verbose {
-            writeln!(f, "  Direct:")?;
-            for name in &self.direct {
-                writeln!(f, "    {name}")?;
+            if self.has_direct_responsibilities() {
+                writeln!(f, "    Direct:")?;
+                for name in &self.direct {
+                    writeln!(f, "      {name}")?;
+                }
             }
 
-            writeln!(f, "  Indirect:")?;
-            for name in &self.direct {
-                writeln!(f, "    {name}")?;
+            if self.has_indirect_responsibilities() {
+                writeln!(f, "    Indirect:")?;
+                for name in &self.direct {
+                    writeln!(f, "      {name}")?;
+                }
             }
         }
 
@@ -513,6 +505,11 @@ impl ParentDepResponsibility {
     pub fn has_responsibilities(&self) -> bool {
         self.has_direct_responsibilities() || self.has_indirect_responsibilities()
     }
+
+    pub fn sort(&mut self) {
+        self.direct.sort_unstable();
+        self.indirect.sort_unstable();
+    }
 }
 
 // *** DupDepResponsibilities ***
@@ -547,6 +544,13 @@ impl ParentDepResponsibilities {
             .values()
             .any(|responsible| responsible.has_responsibilities())
     }
+
+    pub fn sort(&mut self) {
+        self.0
+            .values_mut()
+            .for_each(|responsible| responsible.sort());
+        self.0.sort_unstable_keys();
+    }
 }
 
 // *** DupDepResults ***
@@ -566,18 +570,22 @@ pub struct DupDepResults {
 
 impl std::fmt::Display for DupDepResults {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.top_level.has_responsibilities() {
-            writeln!(f, "Top level responsibilities:")?;
-            writeln!(f, "{}\n", self.top_level)?;
-        }
+        if !self.is_empty() {
+            if self.top_level.has_responsibilities() {
+                writeln!(f, "Top Level Package Responsibility:")?;
+                writeln!(f, "{}\n", self.top_level)?;
+            }
 
-        if self.deps.has_responsibilities() {
-            writeln!(f, "Dependency responsibilities:")?;
-            writeln!(f, "{}\n", self.deps)?;
-        }
+            if self.deps.has_responsibilities() {
+                writeln!(f, "Dependency Responsibility:")?;
+                writeln!(f, "{}\n", self.deps)?;
+            }
 
-        for multi_ver_dep in self.multi_ver_deps.values() {
-            writeln!(f, "{multi_ver_dep}")?;
+            writeln!(f, "Duplicate Package(s):")?;
+
+            for multi_ver_dep in self.multi_ver_deps.values() {
+                writeln!(f, "  {multi_ver_dep}")?;
+            }
         }
 
         Ok(())
@@ -613,9 +621,17 @@ impl DupDepResults {
             }
         }
 
+        let mut top_level = ParentDepResponsibilities(top_level_responsible);
+        let mut deps = ParentDepResponsibilities(direct_responsible);
+
+        top_level.sort();
+        deps.sort();
+        // TODO: Create new type and sort at every level?
+        multi_ver_deps.sort_unstable_keys();
+
         Ok(Self {
-            top_level: ParentDepResponsibilities(top_level_responsible),
-            deps: ParentDepResponsibilities(direct_responsible),
+            top_level,
+            deps,
             multi_ver_deps,
             verbose,
         })
@@ -633,7 +649,6 @@ impl DupDepResults {
         fn next(
             curr_pkg: &Package,
             prev_pkg: &Package,
-            multi_ver_pkg: &Package,
             direct_tl_dep_pkg: Option<(&Package, Option<(&Package, Option<&Package>)>)>,
             dt_parents: &mut DependencyParents,
             top_level_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
@@ -732,7 +747,6 @@ impl DupDepResults {
                 next(
                     dependent_pkg,
                     curr_pkg,
-                    multi_ver_pkg,
                     direct_tl_dep_pkg,
                     dt_parents,
                     top_level_responsible,
@@ -749,7 +763,6 @@ impl DupDepResults {
         next(
             pkg,
             pkg,
-            pkg,
             None,
             dt_parents,
             top_level_responsible,
@@ -758,5 +771,9 @@ impl DupDepResults {
             deps,
             verbose,
         )
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.multi_ver_deps.is_empty()
     }
 }
