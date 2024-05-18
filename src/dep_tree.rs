@@ -1,7 +1,7 @@
 use std::hash::Hash;
 
 use cargo_lock::{Dependency, Lockfile, Name, ResolveVersion, Version};
-use indexmap::{map::Entry, IndexMap, IndexSet};
+use indexmap::{IndexMap, IndexSet};
 
 use crate::multi_ver_deps::{DupDepResults, MultiVerDep, MultiVerParents};
 
@@ -24,27 +24,14 @@ impl Deps {
         for package in lock_file.packages {
             let top_level = package.source.is_none();
 
-            match deps.entry(package.name.clone()) {
-                // Already present by being a dependency of another package
-                Entry::Occupied(mut entry) => {
-                    let dep: &mut Dep = entry.get_mut();
-                    dep.add_modify_ver_dependencies(
-                        package.version.clone(),
-                        top_level,
-                        &package.dependencies,
-                    );
-                }
-                // First time seeing this package
-                Entry::Vacant(entry) => {
-                    let mut dep = Dep::new(package.name.clone());
-                    dep.add_modify_ver_dependencies(
-                        package.version.clone(),
-                        top_level,
-                        &package.dependencies,
-                    );
-                    entry.insert(dep);
-                }
-            }
+            let dep = deps
+                .entry(package.name.clone())
+                .or_insert_with(|| Dep::new(package.name.clone()));
+            dep.add_modify_ver_dependencies(
+                package.version.clone(),
+                top_level,
+                &package.dependencies,
+            );
 
             // Add all dependents
             for dependency in package.dependencies {
@@ -55,18 +42,10 @@ impl Deps {
 
                 let top_level = dependency.source.is_none();
 
-                match deps.entry(dependency.name.clone()) {
-                    Entry::Occupied(mut entry) => {
-                        let dep: &mut Dep = entry.get_mut();
-                        dep.add_modify_ver_dependent(dependency.version, top_level, dependent);
-                    }
-                    Entry::Vacant(entry) => {
-                        // Assume not a top level package since we don't have that info right now
-                        let mut dep = Dep::new(dependency.name.clone());
-                        dep.add_modify_ver_dependent(dependency.version, top_level, dependent);
-                        entry.insert(dep);
-                    }
-                }
+                let dep = deps
+                    .entry(dependency.name.clone())
+                    .or_insert_with(|| Dep::new(dependency.name.clone()));
+                dep.add_modify_ver_dependent(dependency.version, top_level, dependent);
             }
         }
 
@@ -191,17 +170,10 @@ impl Dep {
         top_level: bool,
         deps: &[Dependency],
     ) {
-        match self.versions.entry(version.clone()) {
-            Entry::Occupied(mut entry) => {
-                let version = entry.get_mut();
-                version.add_dependencies(deps);
-            }
-            Entry::Vacant(entry) => {
-                let mut version = DepVersion::new(version, top_level);
-                version.add_dependencies(deps);
-                entry.insert(version);
-            }
-        }
+        self.versions
+            .entry(version.clone())
+            .or_insert_with(|| DepVersion::new(version, top_level))
+            .add_dependencies(deps);
     }
 
     pub fn add_modify_ver_dependent(
@@ -210,17 +182,10 @@ impl Dep {
         top_level: bool,
         dependent: Package,
     ) {
-        match self.versions.entry(version.clone()) {
-            Entry::Occupied(mut entry) => {
-                let version = entry.get_mut();
-                version.add_dependent(dependent);
-            }
-            Entry::Vacant(entry) => {
-                let mut version = DepVersion::new(version, top_level);
-                version.add_dependent(dependent);
-                entry.insert(version);
-            }
-        }
+        self.versions
+            .entry(version.clone())
+            .or_insert_with(|| DepVersion::new(version, top_level))
+            .add_dependent(dependent);
     }
 }
 
