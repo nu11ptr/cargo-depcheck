@@ -46,7 +46,7 @@ impl MultiVerParents {
         };
 
         for (name, mv_dep) in multi_ver_deps {
-            for version in mv_dep.versions() {
+            for version in mv_dep.version_keys() {
                 let pkg = Package {
                     name: name.clone(),
                     version: version.clone(),

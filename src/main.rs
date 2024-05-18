@@ -1,5 +1,5 @@
 use anstream::println;
-use cargo_depcheck::{dep_tree::Deps, multi_ver_deps::DupDepResults};
+use cargo_depcheck::{dep_tree::Deps, results::DupDepResults};
 use cargo_lock::Lockfile;
 use clap::Parser;
 

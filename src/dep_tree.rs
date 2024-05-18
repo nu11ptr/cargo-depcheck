@@ -4,8 +4,7 @@ use cargo_lock::{Dependency, Lockfile, Name, ResolveVersion, Version};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::{
-    multi_ver_deps::{DupDepResults, MultiVerDep},
-    multi_ver_parents::MultiVerParents,
+    multi_ver_deps::MultiVerDep, multi_ver_parents::MultiVerParents, results::DupDepResults,
 };
 
 // *** Deps ***
