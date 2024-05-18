@@ -1,55 +1,10 @@
 use crate::blame::{ParentDepResponsibilities, ParentDepResponsibility};
 use crate::dep_tree::{Deps, Package};
+use crate::multi_ver_parents::MultiVerParents;
 use crate::NO_DUP;
 
 use cargo_lock::{Name, Version};
 use indexmap::{IndexMap, IndexSet};
-
-// *** MultiVerDeps ***
-
-#[derive(Default)]
-pub(crate) struct MultiVerDeps {
-    deps: IndexMap<Name, IndexSet<Version>>,
-}
-
-impl MultiVerDeps {
-    pub fn add(&mut self, name: Name, version: Version) {
-        self.deps.entry(name).or_default().insert(version);
-    }
-
-    pub fn multi_ver_iter(&self) -> impl Iterator<Item = (&Name, &IndexSet<Version>)> {
-        self.deps.iter().filter(|(_, versions)| versions.len() > 1)
-    }
-
-    pub fn has_all(&self, name: &Name, versions: &IndexSet<Version>) -> bool {
-        match self.deps.get(name) {
-            Some(dep_versions) => dep_versions.is_superset(versions),
-            None => false,
-        }
-    }
-}
-
-// *** MultiVerParents ***
-
-#[derive(Default)]
-pub(crate) struct MultiVerParents {
-    parents: IndexMap<Name, IndexMap<Version, MultiVerDeps>>,
-}
-
-impl MultiVerParents {
-    pub fn add(&mut self, parent_name: Name, parent_ver: Version, name: Name, ver: Version) {
-        self.parents
-            .entry(parent_name)
-            .or_default()
-            .entry(parent_ver)
-            .or_default()
-            .add(name, ver);
-    }
-
-    pub fn get_multi_ver_deps(&self, name: &Name, ver: &Version) -> Option<&MultiVerDeps> {
-        self.parents.get(name)?.get(ver)
-    }
-}
 
 // ### Multi Version Dependency Tracking ###
 

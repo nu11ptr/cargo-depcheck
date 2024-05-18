@@ -3,7 +3,10 @@ use std::hash::Hash;
 use cargo_lock::{Dependency, Lockfile, Name, ResolveVersion, Version};
 use indexmap::{IndexMap, IndexSet};
 
-use crate::multi_ver_deps::{DupDepResults, MultiVerDep, MultiVerParents};
+use crate::{
+    multi_ver_deps::{DupDepResults, MultiVerDep},
+    multi_ver_parents::MultiVerParents,
+};
 
 // *** Deps ***
 
@@ -85,17 +88,7 @@ impl Deps {
             })
             .collect();
 
-        let mut multi_ver_parents = MultiVerParents::default();
-
-        for (name, mv_dep) in &multi_ver_deps {
-            for version in mv_dep.versions() {
-                let pkg = Package {
-                    name: name.clone(),
-                    version: version.clone(),
-                };
-                self.build_multi_ver_parents(&pkg, &mut multi_ver_parents)?;
-            }
-        }
+        let multi_ver_parents = MultiVerParents::build(self, &multi_ver_deps)?;
 
         DupDepResults::from_multi_ver_deps_parents(
             multi_ver_deps,
@@ -105,38 +98,6 @@ impl Deps {
             verbose,
             self,
         )
-    }
-
-    fn build_multi_ver_parents(
-        &self,
-        pkg: &Package,
-        parents: &mut MultiVerParents,
-    ) -> Result<(), String> {
-        fn next(
-            pkg: &Package,
-            curr_pkg: &Package,
-            deps: &Deps,
-            parents: &mut MultiVerParents,
-        ) -> Result<(), String> {
-            let ver = deps.get_version(curr_pkg)?;
-
-            if pkg != curr_pkg {
-                parents.add(
-                    curr_pkg.name.clone(),
-                    curr_pkg.version.clone(),
-                    pkg.name.clone(),
-                    pkg.version.clone(),
-                );
-            }
-
-            for dependent in &ver.dependents {
-                next(pkg, dependent, deps, parents)?;
-            }
-
-            Ok(())
-        }
-
-        next(pkg, pkg, self, parents)
     }
 }
 
@@ -171,8 +132,8 @@ impl Dep {
         deps: &[Dependency],
     ) {
         self.versions
-            .entry(version.clone())
-            .or_insert_with(|| DepVersion::new(version, top_level))
+            .entry(version)
+            .or_insert_with(|| DepVersion::new(top_level))
             .add_dependencies(deps);
     }
 
@@ -183,8 +144,8 @@ impl Dep {
         dependent: Package,
     ) {
         self.versions
-            .entry(version.clone())
-            .or_insert_with(|| DepVersion::new(version, top_level))
+            .entry(version)
+            .or_insert_with(|| DepVersion::new(top_level))
             .add_dependent(dependent);
     }
 }
@@ -221,16 +182,14 @@ impl std::fmt::Display for Package {
 
 #[derive(Debug)]
 pub struct DepVersion {
-    version: Version,
     dependencies: IndexSet<Package>,
     dependents: IndexSet<Package>,
     top_level: bool,
 }
 
 impl DepVersion {
-    pub fn new(version: Version, top_level: bool) -> Self {
+    pub fn new(top_level: bool) -> Self {
         Self {
-            version,
             dependencies: IndexSet::new(),
             dependents: IndexSet::new(),
             top_level,

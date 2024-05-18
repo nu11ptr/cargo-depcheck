@@ -7,3 +7,4 @@ pub(crate) const NO_DUP: Style = AnsiColor::Green.on_default();
 pub(crate) mod blame;
 pub mod dep_tree;
 pub mod multi_ver_deps;
+pub(crate) mod multi_ver_parents;
