@@ -1,7 +1,12 @@
 use std::hash::Hash;
 
+use anstyle::{AnsiColor, Style};
 use cargo_lock::{Dependency, Lockfile, Name, ResolveVersion, Version};
 use indexmap::{map::Entry, IndexMap, IndexSet};
+
+const DIRECT: Style = AnsiColor::Red.on_default();
+const INDIRECT: Style = AnsiColor::Yellow.on_default();
+const NO_DUP: Style = AnsiColor::Green.on_default();
 
 // *** Deps ***
 
@@ -83,7 +88,12 @@ impl Deps {
         ))
     }
 
-    pub fn build_dup_dep_results(&self, verbose: bool) -> Result<DupDepResults, String> {
+    pub fn build_dup_dep_results(
+        &self,
+        show_deps: bool,
+        show_dups: bool,
+        verbose: bool,
+    ) -> Result<DupDepResults, String> {
         let multi_ver_deps: IndexMap<_, _> = self
             .deps
             .values()
@@ -114,6 +124,8 @@ impl Deps {
         DupDepResults::from_multi_ver_deps_parents(
             multi_ver_deps,
             &multi_ver_parents,
+            show_deps,
+            show_dups,
             verbose,
             self,
         )
@@ -448,9 +460,17 @@ struct ParentDepResponsibility {
 
 impl std::fmt::Display for ParentDepResponsibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let style = if self.has_direct_responsibilities() {
+            DIRECT
+        } else if self.has_indirect_responsibilities() {
+            INDIRECT
+        } else {
+            NO_DUP
+        };
+
         writeln!(
             f,
-            "  {} (direct: {}, indirect: {})",
+            "{style}  {} (direct: {}, indirect: {}){style:#}",
             self.package,
             self.direct.len(),
             self.indirect.len()
@@ -458,17 +478,19 @@ impl std::fmt::Display for ParentDepResponsibility {
 
         if self.verbose {
             if self.has_direct_responsibilities() {
-                writeln!(f, "    Direct:")?;
+                writeln!(f, "{DIRECT}    Direct:")?;
                 for name in &self.direct {
                     writeln!(f, "      {name}")?;
                 }
+                write!(f, "{DIRECT:#}")?;
             }
 
             if self.has_indirect_responsibilities() {
-                writeln!(f, "    Indirect:")?;
-                for name in &self.direct {
+                writeln!(f, "{INDIRECT}    Indirect:")?;
+                for name in &self.indirect {
                     writeln!(f, "      {name}")?;
                 }
+                write!(f, "{INDIRECT:#}")?;
             }
         }
 
@@ -566,26 +588,32 @@ pub struct DupDepResults {
     multi_ver_deps: IndexMap<Name, MultiVerDep>,
 
     verbose: bool,
+    show_deps: bool,
+    show_dups: bool,
 }
 
 impl std::fmt::Display for DupDepResults {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if !self.is_empty() {
+        if self.has_dup_deps() {
             if self.top_level.has_responsibilities() {
-                writeln!(f, "Top Level Package Responsibility:")?;
+                writeln!(f, "Top Level Packages with Multi Version Dependencies:\n")?;
                 writeln!(f, "{}\n", self.top_level)?;
             }
 
-            if self.deps.has_responsibilities() {
-                writeln!(f, "Dependency Responsibility:")?;
+            if self.show_deps && self.deps.has_responsibilities() {
+                writeln!(f, "Dependencies with Multi Version Dependencies:\n")?;
                 writeln!(f, "{}\n", self.deps)?;
             }
 
-            writeln!(f, "Duplicate Package(s):")?;
+            if self.show_dups {
+                writeln!(f, "Duplicate Package(s):")?;
 
-            for multi_ver_dep in self.multi_ver_deps.values() {
-                writeln!(f, "  {multi_ver_dep}")?;
+                for multi_ver_dep in self.multi_ver_deps.values() {
+                    writeln!(f, "  {multi_ver_dep}")?;
+                }
             }
+        } else {
+            writeln!(f, "{NO_DUP}No duplicate dependencies found.{NO_DUP:#}")?;
         }
 
         Ok(())
@@ -596,6 +624,8 @@ impl DupDepResults {
     fn from_multi_ver_deps_parents(
         mut multi_ver_deps: IndexMap<Name, MultiVerDep>,
         parents: &MultiVerParents,
+        show_deps: bool,
+        show_dups: bool,
         verbose: bool,
         deps: &Deps,
     ) -> Result<Self, String> {
@@ -633,6 +663,8 @@ impl DupDepResults {
             top_level,
             deps,
             multi_ver_deps,
+            show_deps,
+            show_dups,
             verbose,
         })
     }
@@ -773,7 +805,7 @@ impl DupDepResults {
         )
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.multi_ver_deps.is_empty()
+    pub fn has_dup_deps(&self) -> bool {
+        !self.multi_ver_deps.is_empty()
     }
 }
