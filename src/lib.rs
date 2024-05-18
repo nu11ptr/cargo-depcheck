@@ -6,10 +6,15 @@ pub(crate) const INDIRECT: Style = AnsiColor::Yellow.on_default();
 pub(crate) const NO_DUP: Style = AnsiColor::Green.on_default();
 
 pub(crate) mod blame;
-pub mod dep_tree;
+pub(crate) mod dep_tree;
 pub(crate) mod multi_ver_deps;
 pub(crate) mod multi_ver_parents;
-pub mod results;
+pub(crate) mod results;
+
+pub use dep_tree::*;
+pub use multi_ver_deps::MultiVerDeps;
+pub use multi_ver_parents::MultiVerParents;
+pub use results::MultiVerDepResults;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Package {

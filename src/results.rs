@@ -5,7 +5,7 @@ use crate::multi_ver_parents::MultiVerParents;
 use crate::Package;
 use crate::NO_DUP;
 
-pub struct DupDepResults {
+pub struct MultiVerDepResults {
     /// Top level packages that have multiple versions of dependencies
     top_level_responsible: ParentDepResponsibilities,
 
@@ -20,7 +20,7 @@ pub struct DupDepResults {
     show_dups: bool,
 }
 
-impl std::fmt::Display for DupDepResults {
+impl std::fmt::Display for MultiVerDepResults {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.has_dup_deps() {
             if self.top_level_responsible.has_responsibilities() {
@@ -45,14 +45,14 @@ impl std::fmt::Display for DupDepResults {
     }
 }
 
-impl DupDepResults {
-    pub(crate) fn from_multi_ver_deps_parents(
-        mut multi_ver_deps: MultiVerDeps,
+impl MultiVerDepResults {
+    pub fn build(
+        deps: &Deps,
         parents: &MultiVerParents,
+        mut multi_ver_deps: MultiVerDeps,
         show_deps: bool,
         show_dups: bool,
         verbose: bool,
-        deps: &Deps,
     ) -> Result<Self, String> {
         let mut top_level_responsible = ParentDepResponsibilities::default();
         let mut dep_responsible = ParentDepResponsibilities::default();
@@ -103,11 +103,11 @@ impl DupDepResults {
             curr_pkg: &Package,
             prev_pkg: &Package,
             direct_tl_dep_pkg: Option<(&Package, Option<(&Package, Option<&Package>)>)>,
+            deps: &Deps,
+            parents: &MultiVerParents,
             dt_parents: &mut DependencyParents,
             top_level_responsible: &mut ParentDepResponsibilities,
             dep_responsible: &mut ParentDepResponsibilities,
-            parents: &MultiVerParents,
-            deps: &Deps,
             verbose: bool,
         ) -> Result<(), String> {
             let dep_ver = deps.get_version(curr_pkg)?;
@@ -205,11 +205,11 @@ impl DupDepResults {
                     dependent_pkg,
                     curr_pkg,
                     direct_tl_dep_pkg,
+                    deps,
+                    parents,
                     dt_parents,
                     top_level_responsible,
                     dep_responsible,
-                    parents,
-                    deps,
                     verbose,
                 )?;
             }
@@ -221,11 +221,11 @@ impl DupDepResults {
             pkg,
             pkg,
             None,
+            deps,
+            parents,
             dt_parents,
             top_level_responsible,
             dep_responsible,
-            parents,
-            deps,
             verbose,
         )
     }

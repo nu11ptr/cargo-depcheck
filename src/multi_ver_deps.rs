@@ -108,7 +108,7 @@ impl std::fmt::Display for MultiVerDep {
 }
 
 // *** MultiVerDeps ***
-pub(crate) struct MultiVerDeps(IndexMap<Name, MultiVerDep>);
+pub struct MultiVerDeps(IndexMap<Name, MultiVerDep>);
 
 impl MultiVerDeps {
     pub fn from_deps(deps: &Deps) -> Self {
@@ -130,11 +130,11 @@ impl MultiVerDeps {
         self.0.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Name, &MultiVerDep)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&Name, &MultiVerDep)> {
         self.0.iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Name, &mut MultiVerDep)> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&Name, &mut MultiVerDep)> {
         self.0.iter_mut()
     }
 

@@ -1,5 +1,5 @@
 use anstream::println;
-use cargo_depcheck::{dep_tree::Deps, results::DupDepResults};
+use cargo_depcheck::{Deps, MultiVerDepResults, MultiVerDeps, MultiVerParents};
 use cargo_lock::Lockfile;
 use clap::Parser;
 
@@ -29,14 +29,26 @@ struct CargoCli {
     verbose: bool,
 }
 
-fn load_and_process_lock_file(cli: CargoCli) -> Result<DupDepResults, Box<dyn std::error::Error>> {
+fn load_and_process_lock_file(
+    cli: CargoCli,
+) -> Result<MultiVerDepResults, Box<dyn std::error::Error>> {
     let lock_path = cli
         .lock_path
         .unwrap_or(std::path::PathBuf::from("Cargo.lock"));
     let lock_file = Lockfile::load(lock_path)?;
+
     let deps = Deps::from_lock_file(lock_file)?;
-    let dup_dep_results = deps.build_dup_dep_results(cli.deps, cli.dups, cli.verbose)?;
-    Ok(dup_dep_results)
+    let multi_ver_deps = MultiVerDeps::from_deps(&deps);
+    let multi_ver_parents = MultiVerParents::from_deps(&deps, &multi_ver_deps)?;
+    let results = MultiVerDepResults::build(
+        &deps,
+        &multi_ver_parents,
+        multi_ver_deps,
+        cli.deps,
+        cli.dups,
+        cli.verbose,
+    )?;
+    Ok(results)
 }
 
 fn main() {

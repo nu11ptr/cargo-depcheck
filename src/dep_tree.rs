@@ -1,10 +1,7 @@
+use crate::Package;
+
 use cargo_lock::{Dependency, Lockfile, Name, ResolveVersion, Version};
 use indexmap::{IndexMap, IndexSet};
-
-use crate::{
-    multi_ver_deps::MultiVerDeps, multi_ver_parents::MultiVerParents, results::DupDepResults,
-    Package,
-};
 
 // *** Deps ***
 
@@ -63,25 +60,6 @@ impl Deps {
 
     pub fn iter(&self) -> impl Iterator<Item = (&Name, &Dep)> {
         self.deps.iter()
-    }
-
-    pub fn build_dup_dep_results(
-        &self,
-        show_deps: bool,
-        show_dups: bool,
-        verbose: bool,
-    ) -> Result<DupDepResults, String> {
-        let multi_ver_deps = MultiVerDeps::from_deps(self);
-        let multi_ver_parents = MultiVerParents::from_deps(self, &multi_ver_deps)?;
-
-        DupDepResults::from_multi_ver_deps_parents(
-            multi_ver_deps,
-            &multi_ver_parents,
-            show_deps,
-            show_dups,
-            verbose,
-            self,
-        )
     }
 }
 

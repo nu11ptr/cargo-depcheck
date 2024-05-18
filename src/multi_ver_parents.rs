@@ -29,7 +29,7 @@ impl MultiVerDeps {
 
 // *** MultiVerParents ***
 
-pub(crate) struct MultiVerParents {
+pub struct MultiVerParents {
     parents: IndexMap<Name, IndexMap<Version, MultiVerDeps>>,
 }
 
@@ -92,7 +92,7 @@ impl MultiVerParents {
             .add(name, ver);
     }
 
-    pub fn get_multi_ver_deps(&self, name: &Name, ver: &Version) -> Option<&MultiVerDeps> {
+    pub(crate) fn get_multi_ver_deps(&self, name: &Name, ver: &Version) -> Option<&MultiVerDeps> {
         self.parents.get(name)?.get(ver)
     }
 }
