@@ -1,12 +1,9 @@
-use anstyle::{AnsiColor, Style};
-use cargo_lock::{Name, Version};
-use indexmap::{map::Entry, IndexMap, IndexSet};
-
+use crate::blame::{ParentDepResponsibilities, ParentDepResponsibility};
 use crate::dep_tree::{Deps, Package};
+use crate::NO_DUP;
 
-const DIRECT: Style = AnsiColor::Red.on_default();
-const INDIRECT: Style = AnsiColor::Yellow.on_default();
-const NO_DUP: Style = AnsiColor::Green.on_default();
+use cargo_lock::{Name, Version};
+use indexmap::{IndexMap, IndexSet};
 
 // *** MultiVerDeps ***
 
@@ -53,6 +50,8 @@ impl MultiVerParents {
         self.parents.get(name)?.get(ver)
     }
 }
+
+// ### Multi Version Dependency Tracking ###
 
 // *** TopLevelParents ***
 
@@ -121,6 +120,9 @@ impl std::fmt::Display for DependencyParents {
 
 // *** MultiVerDep ***
 
+/// Represents a dependency that has multiple versions. It can track 3 levels of hierarchy:
+/// the direct dependent, the top level's dependencies, and the top level dependents. It intentionally
+/// skips the levels between the direct dependent and the top level dependents for brevity.
 pub(crate) struct MultiVerDep {
     name: Name,
     versions: IndexMap<Version, DependencyParents>,
@@ -140,10 +142,6 @@ impl MultiVerDep {
     pub fn versions(&self) -> impl Iterator<Item = &Version> {
         self.versions.keys()
     }
-
-    // fn add_parents(&mut self, version: Version, direct_and_top_level: DependencyParents) {
-    //     self.versions.insert(version, direct_and_top_level);
-    // }
 }
 
 impl std::fmt::Display for MultiVerDep {
@@ -159,150 +157,18 @@ impl std::fmt::Display for MultiVerDep {
     }
 }
 
-// *** ParentDepResponsibility ***
-
-/// Tracks direct and indirect multi version depencency responsibility for a given package
-struct ParentDepResponsibility {
-    /// Name and version of the package that has multiple versions
-    package: Package,
-
-    /// Packages that have multiple versions this package is directly responsible for including
-    direct: IndexSet<Name>,
-
-    /// Packages that have multiple versions this package is indirectly responsible for (by including
-    /// a package that itself has direct/indirect multi version responsibilities)
-    indirect: IndexSet<Name>,
-
-    verbose: bool,
-}
-
-impl std::fmt::Display for ParentDepResponsibility {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let style = if self.has_direct_responsibilities() {
-            DIRECT
-        } else if self.has_indirect_responsibilities() {
-            INDIRECT
-        } else {
-            NO_DUP
-        };
-
-        writeln!(
-            f,
-            "{style}  {} (direct: {}, indirect: {}){style:#}",
-            self.package,
-            self.direct.len(),
-            self.indirect.len()
-        )?;
-
-        if self.verbose {
-            if self.has_direct_responsibilities() {
-                writeln!(f, "{DIRECT}    Direct:")?;
-                for name in &self.direct {
-                    writeln!(f, "      {name}")?;
-                }
-                write!(f, "{DIRECT:#}")?;
-            }
-
-            if self.has_indirect_responsibilities() {
-                writeln!(f, "{INDIRECT}    Indirect:")?;
-                for name in &self.indirect {
-                    writeln!(f, "      {name}")?;
-                }
-                write!(f, "{INDIRECT:#}")?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl ParentDepResponsibility {
-    pub fn new(package: Package, verbose: bool) -> Self {
-        Self {
-            package,
-            direct: IndexSet::new(),
-            indirect: IndexSet::new(),
-            verbose,
-        }
-    }
-
-    pub fn add_direct(&mut self, name: Name) {
-        self.direct.insert(name);
-    }
-
-    pub fn add_indirect(&mut self, name: Name) {
-        self.indirect.insert(name);
-    }
-
-    pub fn has_direct_responsibilities(&self) -> bool {
-        !self.direct.is_empty()
-    }
-
-    pub fn has_indirect_responsibilities(&self) -> bool {
-        !self.indirect.is_empty()
-    }
-
-    pub fn has_responsibilities(&self) -> bool {
-        self.has_direct_responsibilities() || self.has_indirect_responsibilities()
-    }
-
-    pub fn sort(&mut self) {
-        self.direct.sort_unstable();
-        self.indirect.sort_unstable();
-    }
-}
-
-// *** DupDepResponsibilities ***
-
-struct ParentDepResponsibilities(IndexMap<Package, ParentDepResponsibility>);
-
-impl std::fmt::Display for ParentDepResponsibilities {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for responsible in self.0.values() {
-            write!(f, "{responsible}")?;
-        }
-
-        Ok(())
-    }
-}
-
-impl ParentDepResponsibilities {
-    pub fn has_direct_responsibilities(&self) -> bool {
-        self.0
-            .values()
-            .any(|responsible| responsible.has_direct_responsibilities())
-    }
-
-    pub fn has_indirect_responsibilities(&self) -> bool {
-        self.0
-            .values()
-            .any(|responsible| responsible.has_indirect_responsibilities())
-    }
-
-    pub fn has_responsibilities(&self) -> bool {
-        self.0
-            .values()
-            .any(|responsible| responsible.has_responsibilities())
-    }
-
-    pub fn sort(&mut self) {
-        self.0
-            .values_mut()
-            .for_each(|responsible| responsible.sort());
-        self.0.sort_unstable_keys();
-    }
-}
+// ### Results ###
 
 // *** DupDepResults ***
 
 pub struct DupDepResults {
     /// Top level packages that have multiple versions of dependencies
-    top_level: ParentDepResponsibilities,
+    top_level_responsible: ParentDepResponsibilities,
 
     /// Dependency packages that have multiple versions of dependencies
-    deps: ParentDepResponsibilities,
+    dep_responsible: ParentDepResponsibilities,
 
-    // Dependencies that have multiple versions and their associated direct and top level dependents
+    /// Dependencies that have multiple versions and their associated direct and top level dependents
     multi_ver_deps: IndexMap<Name, MultiVerDep>,
 
     verbose: bool,
@@ -313,14 +179,14 @@ pub struct DupDepResults {
 impl std::fmt::Display for DupDepResults {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.has_dup_deps() {
-            if self.top_level.has_responsibilities() {
+            if self.top_level_responsible.has_responsibilities() {
                 writeln!(f, "Top Level Packages with Multi Version Dependencies:\n")?;
-                writeln!(f, "{}\n", self.top_level)?;
+                writeln!(f, "{}\n", self.top_level_responsible)?;
             }
 
-            if self.show_deps && self.deps.has_responsibilities() {
+            if self.show_deps && self.dep_responsible.has_responsibilities() {
                 writeln!(f, "Dependencies with Multi Version Dependencies:\n")?;
-                writeln!(f, "{}\n", self.deps)?;
+                writeln!(f, "{}\n", self.dep_responsible)?;
             }
 
             if self.show_dups {
@@ -347,8 +213,8 @@ impl DupDepResults {
         verbose: bool,
         deps: &Deps,
     ) -> Result<Self, String> {
-        let mut top_level_responsible = IndexMap::new();
-        let mut direct_responsible = IndexMap::new();
+        let mut top_level_responsible = ParentDepResponsibilities::default();
+        let mut dep_responsible = ParentDepResponsibilities::default();
 
         for (name, mv_dep) in &mut multi_ver_deps {
             for (version, dt_parents) in mv_dep.versions.iter_mut() {
@@ -361,7 +227,7 @@ impl DupDepResults {
                     &pkg,
                     dt_parents,
                     &mut top_level_responsible,
-                    &mut direct_responsible,
+                    &mut dep_responsible,
                     parents,
                     deps,
                     verbose,
@@ -369,17 +235,14 @@ impl DupDepResults {
             }
         }
 
-        let mut top_level = ParentDepResponsibilities(top_level_responsible);
-        let mut deps = ParentDepResponsibilities(direct_responsible);
-
-        top_level.sort();
-        deps.sort();
+        top_level_responsible.sort();
+        dep_responsible.sort();
         // TODO: Create new type and sort at every level?
         multi_ver_deps.sort_unstable_keys();
 
         Ok(Self {
-            top_level,
-            deps,
+            top_level_responsible,
+            dep_responsible,
             multi_ver_deps,
             show_deps,
             show_dups,
@@ -390,8 +253,8 @@ impl DupDepResults {
     fn process_multi_ver_dep(
         pkg: &Package,
         dt_parents: &mut DependencyParents,
-        top_level_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
-        direct_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
+        top_level_responsible: &mut ParentDepResponsibilities,
+        dep_responsible: &mut ParentDepResponsibilities,
         parents: &MultiVerParents,
         deps: &Deps,
         verbose: bool,
@@ -401,8 +264,8 @@ impl DupDepResults {
             prev_pkg: &Package,
             direct_tl_dep_pkg: Option<(&Package, Option<(&Package, Option<&Package>)>)>,
             dt_parents: &mut DependencyParents,
-            top_level_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
-            direct_responsible: &mut IndexMap<Package, ParentDepResponsibility>,
+            top_level_responsible: &mut ParentDepResponsibilities,
+            dep_responsible: &mut ParentDepResponsibilities,
             parents: &MultiVerParents,
             deps: &Deps,
             verbose: bool,
@@ -410,14 +273,14 @@ impl DupDepResults {
             let dep_ver = deps.get_version(curr_pkg)?;
             let top_level = dep_ver.is_top_level();
 
-            let entry = if top_level {
-                top_level_responsible.entry(curr_pkg.clone())
+            let processed = if top_level {
+                top_level_responsible.contains(curr_pkg)
             } else {
-                direct_responsible.entry(curr_pkg.clone())
+                dep_responsible.contains(curr_pkg)
             };
 
             // This package may have been processed already by another multi version dependency
-            if let Entry::Vacant(entry) = entry {
+            if !processed {
                 // Multi version deps if bottom rung may not themselves have this structure
                 if let Some(multi_ver_deps) =
                     parents.get_multi_ver_deps(&curr_pkg.name, &curr_pkg.version)
@@ -442,7 +305,11 @@ impl DupDepResults {
                         }
                     }
 
-                    entry.insert(parent_multi_ver_deps);
+                    if top_level {
+                        top_level_responsible.insert(curr_pkg.clone(), parent_multi_ver_deps);
+                    } else {
+                        dep_responsible.insert(curr_pkg.clone(), parent_multi_ver_deps);
+                    }
                 }
             }
 
@@ -500,7 +367,7 @@ impl DupDepResults {
                     direct_tl_dep_pkg,
                     dt_parents,
                     top_level_responsible,
-                    direct_responsible,
+                    dep_responsible,
                     parents,
                     deps,
                     verbose,
@@ -516,7 +383,7 @@ impl DupDepResults {
             None,
             dt_parents,
             top_level_responsible,
-            direct_responsible,
+            dep_responsible,
             parents,
             deps,
             verbose,
