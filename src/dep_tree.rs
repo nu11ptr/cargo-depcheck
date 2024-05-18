@@ -2,7 +2,7 @@ use cargo_lock::{Dependency, Lockfile, Name, ResolveVersion, Version};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::{
-    multi_ver_deps::MultiVerDep, multi_ver_parents::MultiVerParents, results::DupDepResults,
+    multi_ver_deps::MultiVerDeps, multi_ver_parents::MultiVerParents, results::DupDepResults,
     Package,
 };
 
@@ -25,9 +25,7 @@ impl Deps {
         for package in lock_file.packages {
             let top_level = package.source.is_none();
 
-            let dep = deps
-                .entry(package.name.clone())
-                .or_insert_with(|| Dep::new(package.name.clone()));
+            let dep: &mut Dep = deps.entry(package.name.clone()).or_default();
             dep.add_modify_ver_dependencies(
                 package.version.clone(),
                 top_level,
@@ -43,9 +41,7 @@ impl Deps {
 
                 let top_level = dependency.source.is_none();
 
-                let dep = deps
-                    .entry(dependency.name.clone())
-                    .or_insert_with(|| Dep::new(dependency.name.clone()));
+                let dep = deps.entry(dependency.name.clone()).or_default();
                 dep.add_modify_ver_dependent(dependency.version, top_level, dependent);
             }
         }
@@ -65,28 +61,18 @@ impl Deps {
         ))
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (&Name, &Dep)> {
+        self.deps.iter()
+    }
+
     pub fn build_dup_dep_results(
         &self,
         show_deps: bool,
         show_dups: bool,
         verbose: bool,
     ) -> Result<DupDepResults, String> {
-        let multi_ver_deps: IndexMap<_, _> = self
-            .deps
-            .values()
-            .filter_map(|dep| {
-                if dep.has_multiple_versions() {
-                    Some((
-                        dep.name.clone(),
-                        MultiVerDep::new(dep.name.clone(), dep.versions()),
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let multi_ver_parents = MultiVerParents::build(self, &multi_ver_deps)?;
+        let multi_ver_deps = MultiVerDeps::from_deps(self);
+        let multi_ver_parents = MultiVerParents::from_deps(self, &multi_ver_deps)?;
 
         DupDepResults::from_multi_ver_deps_parents(
             multi_ver_deps,
@@ -101,20 +87,12 @@ impl Deps {
 
 // *** Dep ***
 
-#[derive(Debug)]
-struct Dep {
-    name: Name,
+#[derive(Debug, Default)]
+pub struct Dep {
     versions: IndexMap<Version, DepVersion>,
 }
 
 impl Dep {
-    pub fn new(name: Name) -> Self {
-        Self {
-            name,
-            versions: IndexMap::new(),
-        }
-    }
-
     pub fn has_multiple_versions(&self) -> bool {
         self.versions.len() > 1
     }

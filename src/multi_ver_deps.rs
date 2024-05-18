@@ -1,4 +1,4 @@
-use crate::Package;
+use crate::{dep_tree::Deps, Package};
 
 use cargo_lock::{Name, Version};
 use indexmap::{IndexMap, IndexSet};
@@ -74,14 +74,12 @@ impl std::fmt::Display for DependencyParents {
 /// the direct dependent, the top level's dependencies, and the top level dependents. It intentionally
 /// skips the levels between the direct dependent and the top level dependents for brevity.
 pub(crate) struct MultiVerDep {
-    name: Name,
     versions: IndexMap<Version, DependencyParents>,
 }
 
 impl MultiVerDep {
-    pub fn new(name: Name, versions: IndexSet<Version>) -> Self {
+    pub fn new(versions: IndexSet<Version>) -> Self {
         Self {
-            name,
             versions: versions
                 .into_iter()
                 .map(|ver| (ver, DependencyParents::default()))
@@ -100,11 +98,56 @@ impl MultiVerDep {
 
 impl std::fmt::Display for MultiVerDep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}:", self.name)?;
-
         for (version, direct_and_top_level) in self.versions.iter() {
             writeln!(f, "    {version}:")?;
             write!(f, "{direct_and_top_level}")?;
+        }
+
+        Ok(())
+    }
+}
+
+// *** MultiVerDeps ***
+pub(crate) struct MultiVerDeps(IndexMap<Name, MultiVerDep>);
+
+impl MultiVerDeps {
+    pub fn from_deps(deps: &Deps) -> Self {
+        let multi_ver_deps: IndexMap<_, _> = deps
+            .iter()
+            .filter_map(|(name, dep)| {
+                if dep.has_multiple_versions() {
+                    Some((name.clone(), MultiVerDep::new(dep.versions())))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Self(multi_ver_deps)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Name, &MultiVerDep)> {
+        self.0.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Name, &mut MultiVerDep)> {
+        self.0.iter_mut()
+    }
+
+    pub fn sort(&mut self) {
+        self.0.sort_unstable_keys();
+    }
+}
+
+impl std::fmt::Display for MultiVerDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (name, multi_ver_dep) in &self.0 {
+            writeln!(f, "{name}:")?;
+            writeln!(f, "{multi_ver_dep}")?;
         }
 
         Ok(())

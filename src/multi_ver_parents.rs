@@ -1,4 +1,4 @@
-use crate::{dep_tree::Deps, multi_ver_deps::MultiVerDep, Package};
+use crate::{dep_tree::Deps, Package};
 
 use cargo_lock::{Name, Version};
 use indexmap::{IndexMap, IndexSet};
@@ -34,15 +34,15 @@ pub(crate) struct MultiVerParents {
 }
 
 impl MultiVerParents {
-    pub fn build(
+    pub fn from_deps(
         deps: &Deps,
-        multi_ver_deps: &IndexMap<Name, MultiVerDep>,
+        multi_ver_deps: &crate::multi_ver_deps::MultiVerDeps,
     ) -> Result<Self, String> {
         let mut multi_ver_parents = Self {
             parents: IndexMap::new(),
         };
 
-        for (name, mv_dep) in multi_ver_deps {
+        for (name, mv_dep) in multi_ver_deps.iter() {
             for version in mv_dep.version_keys() {
                 let pkg = Package {
                     name: name.clone(),

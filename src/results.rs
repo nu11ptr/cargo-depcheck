@@ -1,12 +1,9 @@
 use crate::blame::{ParentDepResponsibilities, ParentDepResponsibility};
 use crate::dep_tree::Deps;
-use crate::multi_ver_deps::{DependencyParents, MultiVerDep};
+use crate::multi_ver_deps::{DependencyParents, MultiVerDeps};
 use crate::multi_ver_parents::MultiVerParents;
 use crate::Package;
 use crate::NO_DUP;
-
-use cargo_lock::Name;
-use indexmap::IndexMap;
 
 pub struct DupDepResults {
     /// Top level packages that have multiple versions of dependencies
@@ -16,7 +13,7 @@ pub struct DupDepResults {
     dep_responsible: ParentDepResponsibilities,
 
     /// Dependencies that have multiple versions and their associated direct and top level dependents
-    multi_ver_deps: IndexMap<Name, MultiVerDep>,
+    multi_ver_deps: MultiVerDeps,
 
     verbose: bool,
     show_deps: bool,
@@ -38,10 +35,7 @@ impl std::fmt::Display for DupDepResults {
 
             if self.show_dups {
                 writeln!(f, "Duplicate Package(s):")?;
-
-                for multi_ver_dep in self.multi_ver_deps.values() {
-                    writeln!(f, "  {multi_ver_dep}")?;
-                }
+                writeln!(f, "  {}", self.multi_ver_deps)?;
             }
         } else {
             writeln!(f, "{NO_DUP}No duplicate dependencies found.{NO_DUP:#}")?;
@@ -53,7 +47,7 @@ impl std::fmt::Display for DupDepResults {
 
 impl DupDepResults {
     pub(crate) fn from_multi_ver_deps_parents(
-        mut multi_ver_deps: IndexMap<Name, MultiVerDep>,
+        mut multi_ver_deps: MultiVerDeps,
         parents: &MultiVerParents,
         show_deps: bool,
         show_dups: bool,
@@ -63,7 +57,7 @@ impl DupDepResults {
         let mut top_level_responsible = ParentDepResponsibilities::default();
         let mut dep_responsible = ParentDepResponsibilities::default();
 
-        for (name, mv_dep) in &mut multi_ver_deps {
+        for (name, mv_dep) in multi_ver_deps.iter_mut() {
             for (version, dt_parents) in mv_dep.versions_mut() {
                 let pkg = Package {
                     name: name.clone(),
@@ -84,8 +78,7 @@ impl DupDepResults {
 
         top_level_responsible.sort();
         dep_responsible.sort();
-        // TODO: Create new type and sort at every level?
-        multi_ver_deps.sort_unstable_keys();
+        multi_ver_deps.sort();
 
         Ok(Self {
             top_level_responsible,
