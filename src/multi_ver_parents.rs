@@ -1,7 +1,4 @@
-use crate::{
-    dep_tree::{Deps, Package},
-    multi_ver_deps::MultiVerDep,
-};
+use crate::{dep_tree::Deps, multi_ver_deps::MultiVerDep, Package};
 
 use cargo_lock::{Name, Version};
 use indexmap::{IndexMap, IndexSet};

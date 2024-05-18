@@ -1,4 +1,4 @@
-use crate::{dep_tree::Package, DIRECT, INDIRECT, NO_DUP};
+use crate::{Package, DIRECT, INDIRECT, NO_DUP};
 
 use cargo_lock::Name;
 use indexmap::{IndexMap, IndexSet};

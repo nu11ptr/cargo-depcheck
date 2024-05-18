@@ -1,4 +1,4 @@
-use crate::dep_tree::Package;
+use crate::Package;
 
 use cargo_lock::{Name, Version};
 use indexmap::{IndexMap, IndexSet};

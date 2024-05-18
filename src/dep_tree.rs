@@ -1,10 +1,9 @@
-use std::hash::Hash;
-
 use cargo_lock::{Dependency, Lockfile, Name, ResolveVersion, Version};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::{
     multi_ver_deps::MultiVerDep, multi_ver_parents::MultiVerParents, results::DupDepResults,
+    Package,
 };
 
 // *** Deps ***
@@ -124,7 +123,7 @@ impl Dep {
         self.versions.keys().cloned().collect()
     }
 
-    pub fn add_modify_ver_dependencies(
+    fn add_modify_ver_dependencies(
         &mut self,
         version: Version,
         top_level: bool,
@@ -136,44 +135,11 @@ impl Dep {
             .add_dependencies(deps);
     }
 
-    pub fn add_modify_ver_dependent(
-        &mut self,
-        version: Version,
-        top_level: bool,
-        dependent: Package,
-    ) {
+    fn add_modify_ver_dependent(&mut self, version: Version, top_level: bool, dependent: Package) {
         self.versions
             .entry(version)
             .or_insert_with(|| DepVersion::new(top_level))
             .add_dependent(dependent);
-    }
-}
-
-// *** Package ***
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Package {
-    pub name: Name,
-    pub version: Version,
-}
-
-impl Ord for Package {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.name
-            .cmp(&other.name)
-            .then_with(|| self.version.cmp(&other.version))
-    }
-}
-
-impl PartialOrd for Package {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::fmt::Display for Package {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {}", self.name, self.version)
     }
 }
 

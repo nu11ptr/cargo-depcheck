@@ -1,7 +1,8 @@
 use crate::blame::{ParentDepResponsibilities, ParentDepResponsibility};
-use crate::dep_tree::{Deps, Package};
+use crate::dep_tree::Deps;
 use crate::multi_ver_deps::{DependencyParents, MultiVerDep};
 use crate::multi_ver_parents::MultiVerParents;
+use crate::Package;
 use crate::NO_DUP;
 
 use cargo_lock::Name;
