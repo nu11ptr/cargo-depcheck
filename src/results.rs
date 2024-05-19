@@ -1,103 +1,108 @@
-use crate::blame::{ParentDepResponsibilities, ParentDepResponsibility};
+use crate::blame::{ParentBlameEntry, ParentMultiVerBlame};
 use crate::dep_tree::Deps;
-use crate::multi_ver_deps::{DependencyParents, MultiVerDeps};
+use crate::multi_ver_deps::{DirectDependents, MultiVerDeps};
 use crate::multi_ver_parents::MultiVerParents;
-use crate::Package;
-use crate::NO_DUP;
+use crate::{BlameMode, BlamePkgMode, NO_DUP};
+use crate::{DependentMode, Package};
 
 pub struct MultiVerDepResults {
     /// Top level packages that have multiple versions of dependencies
-    top_level_responsible: ParentDepResponsibilities,
+    top_level_blame: ParentMultiVerBlame,
 
     /// Dependency packages that have multiple versions of dependencies
-    dep_responsible: ParentDepResponsibilities,
+    dep_blame: ParentMultiVerBlame,
 
     /// Dependencies that have multiple versions and their associated direct and top level dependents
     multi_ver_deps: MultiVerDeps,
-
-    verbose: bool,
-    show_deps: bool,
-    show_dups: bool,
 }
 
-impl std::fmt::Display for MultiVerDepResults {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.has_dup_deps() {
-            if self.top_level_responsible.has_responsibilities() {
-                writeln!(f, "Top Level Packages with Multi Version Dependencies:\n")?;
-                writeln!(f, "{}\n", self.top_level_responsible)?;
+impl MultiVerDepResults {
+    pub fn render<W: std::fmt::Write>(
+        &self,
+        w: &mut W,
+        dep_mode: Option<DependentMode>,
+        blame_mode: Option<BlameMode>,
+        blame_packages: Option<BlamePkgMode>,
+    ) -> std::fmt::Result {
+        if self.has_multi_ver_deps() {
+            if matches!(blame_mode, Some(BlameMode::TopLevel | BlameMode::All))
+                && self.top_level_blame.has_blame()
+            {
+                writeln!(w, "Top Level Packages with Multi Version Dependencies:\n")?;
+                self.top_level_blame.render(w, blame_packages)?;
+                writeln!(w, "\n")?;
             }
 
-            if self.show_deps && self.dep_responsible.has_responsibilities() {
-                writeln!(f, "Dependencies with Multi Version Dependencies:\n")?;
-                writeln!(f, "{}\n", self.dep_responsible)?;
+            if matches!(blame_mode, Some(BlameMode::All)) && self.dep_blame.has_blame() {
+                writeln!(w, "Dependencies with Multi Version Dependencies:\n")?;
+                self.dep_blame.render(w, blame_packages)?;
+                writeln!(w, "\n")?;
             }
 
-            if self.show_dups {
-                writeln!(f, "Duplicate Package(s):")?;
-                writeln!(f, "  {}", self.multi_ver_deps)?;
-            }
+            writeln!(w, "Duplicate Package(s):\n")?;
+            self.multi_ver_deps
+                .render(w, dep_mode, &self.top_level_blame, &self.dep_blame)?;
         } else {
-            writeln!(f, "{NO_DUP}No duplicate dependencies found.{NO_DUP:#}")?;
+            writeln!(w, "{NO_DUP}No duplicate dependencies found.{NO_DUP:#}")?;
         }
 
         Ok(())
     }
-}
 
-impl MultiVerDepResults {
     pub fn build(
         deps: &Deps,
         parents: &MultiVerParents,
         mut multi_ver_deps: MultiVerDeps,
-        show_deps: bool,
-        show_dups: bool,
-        verbose: bool,
+        dep_mode: Option<DependentMode>,
+        blame_mode: Option<BlameMode>,
     ) -> Result<Self, String> {
-        let mut top_level_responsible = ParentDepResponsibilities::default();
-        let mut dep_responsible = ParentDepResponsibilities::default();
+        let mut top_level_blame = ParentMultiVerBlame::default();
+        let mut dep_blame = ParentMultiVerBlame::default();
 
-        for (name, mv_dep) in multi_ver_deps.iter_mut() {
-            for (version, dt_parents) in mv_dep.versions_mut() {
-                let pkg = Package {
-                    name: name.clone(),
-                    version: version.clone(),
-                };
+        if dep_mode.is_some() || blame_mode.is_some() {
+            for (name, mv_dep) in multi_ver_deps.iter_mut() {
+                for (version, dt_parents) in mv_dep.versions_mut() {
+                    let pkg = Package {
+                        name: name.clone(),
+                        version: version.clone(),
+                    };
 
-                Self::process_multi_ver_dep(
-                    &pkg,
-                    dt_parents,
-                    &mut top_level_responsible,
-                    &mut dep_responsible,
-                    parents,
-                    deps,
-                    verbose,
-                )?;
+                    Self::process_multi_ver_dep(
+                        &pkg,
+                        dt_parents,
+                        &mut top_level_blame,
+                        &mut dep_blame,
+                        parents,
+                        deps,
+                        dep_mode,
+                        blame_mode,
+                    )?;
+                }
             }
+
+            top_level_blame.sort();
+            dep_blame.sort();
         }
 
-        top_level_responsible.sort();
-        dep_responsible.sort();
+        // This will exist and need sorting regardless of modes
         multi_ver_deps.sort();
 
         Ok(Self {
-            top_level_responsible,
-            dep_responsible,
+            top_level_blame,
+            dep_blame,
             multi_ver_deps,
-            show_deps,
-            show_dups,
-            verbose,
         })
     }
 
     fn process_multi_ver_dep(
         pkg: &Package,
-        dt_parents: &mut DependencyParents,
-        top_level_responsible: &mut ParentDepResponsibilities,
-        dep_responsible: &mut ParentDepResponsibilities,
+        dt_parents: &mut DirectDependents,
+        top_level_blame: &mut ParentMultiVerBlame,
+        dep_blame: &mut ParentMultiVerBlame,
         parents: &MultiVerParents,
         deps: &Deps,
-        verbose: bool,
+        dep_mode: Option<DependentMode>,
+        blame_mode: Option<BlameMode>,
     ) -> Result<(), String> {
         fn next(
             curr_pkg: &Package,
@@ -105,55 +110,59 @@ impl MultiVerDepResults {
             direct_tl_dep_pkg: Option<(&Package, Option<(&Package, Option<&Package>)>)>,
             deps: &Deps,
             parents: &MultiVerParents,
-            dt_parents: &mut DependencyParents,
-            top_level_responsible: &mut ParentDepResponsibilities,
-            dep_responsible: &mut ParentDepResponsibilities,
-            verbose: bool,
+            dt_parents: &mut DirectDependents,
+            top_level_blame: &mut ParentMultiVerBlame,
+            dep_blame: &mut ParentMultiVerBlame,
+            dep_mode: Option<DependentMode>,
+            blame_mode: Option<BlameMode>,
         ) -> Result<(), String> {
             let dep_ver = deps.get_version(curr_pkg)?;
             let top_level = dep_ver.is_top_level();
 
-            let processed = if top_level {
-                top_level_responsible.contains(curr_pkg)
-            } else {
-                dep_responsible.contains(curr_pkg)
-            };
+            if blame_mode.is_some() {
+                let processed = if top_level {
+                    top_level_blame.contains(curr_pkg)
+                } else {
+                    dep_blame.contains(curr_pkg)
+                };
 
-            // This package may have been processed already by another multi version dependency
-            if !processed {
-                // Multi version deps if bottom rung may not themselves have this structure
-                if let Some(multi_ver_deps) =
-                    parents.get_multi_ver_deps(&curr_pkg.name, &curr_pkg.version)
-                {
-                    let mut parent_multi_ver_deps =
-                        ParentDepResponsibility::new(curr_pkg.clone(), verbose);
+                // This package may have been processed already by another multi version dependency
+                if !processed {
+                    // Multi version deps if bottom rung may not themselves have this structure
+                    if let Some(multi_ver_deps) =
+                        parents.get_multi_ver_deps(&curr_pkg.name, &curr_pkg.version)
+                    {
+                        let mut parent_multi_ver_deps = ParentBlameEntry::default();
 
-                    // We only iterate over the dep if this immediate parent has multiple versions downstream
-                    for (name, versions) in multi_ver_deps.multi_ver_iter() {
-                        // Find out if any of our dependencies have all the versions
-                        let has_all = dep_ver
-                            .dependencies()
-                            .iter()
-                            .filter_map(|dep| parents.get_multi_ver_deps(&dep.name, &dep.version))
-                            .any(|deps| deps.has_all(name, versions));
+                        // We only iterate over the dep if this immediate parent has multiple versions downstream
+                        for (name, versions) in multi_ver_deps.multi_ver_iter() {
+                            // Find out if any of our dependencies have all the versions
+                            let has_all = dep_ver
+                                .dependencies()
+                                .iter()
+                                .filter_map(|dep| {
+                                    parents.get_multi_ver_deps(&dep.name, &dep.version)
+                                })
+                                .any(|deps| deps.has_all(name, versions));
 
-                        // If any single depedency has all the versions then we are only indirectly responsible else directly responsible
-                        if has_all {
-                            parent_multi_ver_deps.add_indirect(name.clone());
-                        } else {
-                            parent_multi_ver_deps.add_direct(name.clone());
+                            // If any single depedency has all the versions then we are only indirectly responsible else directly responsible
+                            if has_all {
+                                parent_multi_ver_deps.add_indirect(name.clone());
+                            } else {
+                                parent_multi_ver_deps.add_direct(name.clone());
+                            }
                         }
-                    }
 
-                    if top_level {
-                        top_level_responsible.insert(curr_pkg.clone(), parent_multi_ver_deps);
-                    } else {
-                        dep_responsible.insert(curr_pkg.clone(), parent_multi_ver_deps);
+                        if top_level {
+                            top_level_blame.insert(curr_pkg.clone(), parent_multi_ver_deps);
+                        } else {
+                            dep_blame.insert(curr_pkg.clone(), parent_multi_ver_deps);
+                        }
                     }
                 }
             }
 
-            if top_level {
+            if top_level && dep_mode.is_some() {
                 let (direct_tl_dep_pkg, store) = match direct_tl_dep_pkg {
                     // Most typical case. curr_pkg != prev_pkg. direct_pkg may or may not equal prev_pkg
                     Some((direct_pkg, None)) => {
@@ -208,9 +217,10 @@ impl MultiVerDepResults {
                     deps,
                     parents,
                     dt_parents,
-                    top_level_responsible,
-                    dep_responsible,
-                    verbose,
+                    top_level_blame,
+                    dep_blame,
+                    dep_mode,
+                    blame_mode,
                 )?;
             }
 
@@ -224,13 +234,14 @@ impl MultiVerDepResults {
             deps,
             parents,
             dt_parents,
-            top_level_responsible,
-            dep_responsible,
-            verbose,
+            top_level_blame,
+            dep_blame,
+            dep_mode,
+            blame_mode,
         )
     }
 
-    pub fn has_dup_deps(&self) -> bool {
+    pub fn has_multi_ver_deps(&self) -> bool {
         !self.multi_ver_deps.is_empty()
     }
 }

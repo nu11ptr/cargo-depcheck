@@ -29,12 +29,13 @@ impl MultiVerDeps {
 
 // *** MultiVerParents ***
 
+#[derive(Default)]
 pub struct MultiVerParents {
     parents: IndexMap<Name, IndexMap<Version, MultiVerDeps>>,
 }
 
 impl MultiVerParents {
-    pub fn from_deps(
+    pub fn build(
         deps: &Deps,
         multi_ver_deps: &crate::multi_ver_deps::MultiVerDeps,
     ) -> Result<Self, String> {
