@@ -8,11 +8,13 @@ use indexmap::{IndexMap, IndexSet};
 #[derive(Debug)]
 pub struct Deps {
     deps: IndexMap<Name, Dep>,
+    top_level_deps: IndexSet<Package>,
 }
 
 impl Deps {
     pub fn from_lock_file(lock_file: Lockfile) -> Result<Self, String> {
         let mut deps = IndexMap::with_capacity(lock_file.packages.len());
+        let mut top_level_deps = IndexSet::new();
 
         // I can't find any examples of non-v3 lock files, so I'm not sure if this is necessary
         if lock_file.version != ResolveVersion::V3 {
@@ -21,6 +23,13 @@ impl Deps {
 
         for package in lock_file.packages {
             let top_level = package.source.is_none();
+
+            if top_level {
+                top_level_deps.insert(Package {
+                    name: package.name.clone(),
+                    version: package.version.clone(),
+                });
+            }
 
             let dep: &mut Dep = deps.entry(package.name.clone()).or_default();
             dep.add_modify_ver_dependencies(
@@ -43,7 +52,10 @@ impl Deps {
             }
         }
 
-        Ok(Deps { deps })
+        Ok(Deps {
+            deps,
+            top_level_deps,
+        })
     }
 
     pub fn get_version(&self, pkg: &Package) -> Result<&DepVersion, String> {
@@ -58,8 +70,16 @@ impl Deps {
         ))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Name, &Dep)> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&Name, &Dep)> {
         self.deps.iter()
+    }
+
+    pub fn top_level_iter(&self) -> impl ExactSizeIterator<Item = &Package> {
+        self.top_level_deps.iter()
+    }
+
+    pub fn count(&self) -> usize {
+        self.deps.len()
     }
 }
 

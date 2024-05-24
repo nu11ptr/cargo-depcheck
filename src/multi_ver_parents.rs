@@ -15,26 +15,23 @@ impl MultiVerDeps {
         self.deps.entry(name).or_default().insert(version);
     }
 
-    pub fn multi_ver_iter(&self) -> impl Iterator<Item = (&Name, &IndexSet<Version>)> {
-        self.deps.iter().filter(|(_, versions)| versions.len() > 1)
+    pub fn get(&self, name: &Name) -> Option<&IndexSet<Version>> {
+        self.deps.get(name)
     }
 
-    pub fn has_all(&self, name: &Name, versions: &IndexSet<Version>) -> bool {
-        match self.deps.get(name) {
-            Some(dep_versions) => dep_versions.is_superset(versions),
-            None => false,
-        }
+    pub fn multi_ver_iter(&self) -> impl Iterator<Item = (&Name, &IndexSet<Version>)> {
+        self.deps.iter().filter(|(_, versions)| versions.len() > 1)
     }
 }
 
 // *** MultiVerParents ***
 
 #[derive(Default)]
-pub struct MultiVerParents {
-    parents: IndexMap<Name, IndexMap<Version, MultiVerDeps>>,
+pub struct MultiVerDepParents {
+    parents: IndexMap<Package, MultiVerDeps>,
 }
 
-impl MultiVerParents {
+impl MultiVerDepParents {
     pub fn build(
         deps: &Deps,
         multi_ver_deps: &crate::multi_ver_deps::MultiVerDeps,
@@ -44,7 +41,7 @@ impl MultiVerParents {
         };
 
         for (name, mv_dep) in multi_ver_deps.iter() {
-            for version in mv_dep.version_keys() {
+            for version in mv_dep.iter() {
                 let pkg = Package {
                     name: name.clone(),
                     version: version.clone(),
@@ -61,17 +58,12 @@ impl MultiVerParents {
             pkg: &Package,
             curr_pkg: &Package,
             deps: &Deps,
-            parents: &mut MultiVerParents,
+            parents: &mut MultiVerDepParents,
         ) -> Result<(), String> {
             let ver = deps.get_version(curr_pkg)?;
 
             if pkg != curr_pkg {
-                parents.add(
-                    curr_pkg.name.clone(),
-                    curr_pkg.version.clone(),
-                    pkg.name.clone(),
-                    pkg.version.clone(),
-                );
+                parents.add(curr_pkg.clone(), pkg.name.clone(), pkg.version.clone());
             }
 
             for dependent in ver.dependents() {
@@ -84,16 +76,11 @@ impl MultiVerParents {
         next(pkg, pkg, deps, self)
     }
 
-    fn add(&mut self, parent_name: Name, parent_ver: Version, name: Name, ver: Version) {
-        self.parents
-            .entry(parent_name)
-            .or_default()
-            .entry(parent_ver)
-            .or_default()
-            .add(name, ver);
+    fn add(&mut self, parent: Package, name: Name, ver: Version) {
+        self.parents.entry(parent).or_default().add(name, ver);
     }
 
-    pub(crate) fn get_multi_ver_deps(&self, name: &Name, ver: &Version) -> Option<&MultiVerDeps> {
-        self.parents.get(name)?.get(ver)
+    pub(crate) fn get_multi_ver_deps(&self, parent: &Package) -> Option<&MultiVerDeps> {
+        self.parents.get(parent)
     }
 }

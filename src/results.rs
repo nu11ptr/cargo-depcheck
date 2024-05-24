@@ -1,91 +1,70 @@
-use crate::blame::{ParentBlameEntry, ParentMultiVerBlame};
+use std::collections::VecDeque;
+
+use crate::blame::{MultiVerDepBlame, MultiVerDepBlameEntry};
 use crate::dep_tree::Deps;
-use crate::multi_ver_deps::{DirectDependents, MultiVerDeps};
-use crate::multi_ver_parents::MultiVerParents;
-use crate::{BlameMode, BlamePkgMode, NO_DUP};
-use crate::{DependentMode, Package};
+use crate::multi_ver_deps::MultiVerDeps;
+use crate::multi_ver_parents::MultiVerDepParents;
+use crate::{BlameMode, NO_DUP};
 
 pub struct MultiVerDepResults {
     /// Top level packages that have multiple versions of dependencies
-    top_level_blame: ParentMultiVerBlame,
+    top_level_blame: MultiVerDepBlame,
 
     /// Dependency packages that have multiple versions of dependencies
-    dep_blame: ParentMultiVerBlame,
+    dep_blame: MultiVerDepBlame,
 
     /// Dependencies that have multiple versions and their associated direct and top level dependents
     multi_ver_deps: MultiVerDeps,
 }
 
 impl MultiVerDepResults {
-    pub fn render<W: std::fmt::Write>(
-        &self,
-        w: &mut W,
-        dep_mode: Option<DependentMode>,
-        blame_mode: Option<BlameMode>,
-        blame_packages: Option<BlamePkgMode>,
-    ) -> std::fmt::Result {
-        if self.has_multi_ver_deps() {
-            if matches!(blame_mode, Some(BlameMode::TopLevel | BlameMode::All))
-                && self.top_level_blame.has_blame()
-            {
-                writeln!(w, "Top Level Packages with Multi Version Dependencies:\n")?;
-                self.top_level_blame.render(w, blame_packages)?;
-                writeln!(w, "\n")?;
-            }
-
-            if matches!(blame_mode, Some(BlameMode::All)) && self.dep_blame.has_blame() {
-                writeln!(w, "Dependencies with Multi Version Dependencies:\n")?;
-                self.dep_blame.render(w, blame_packages)?;
-                writeln!(w, "\n")?;
-            }
-
-            writeln!(w, "Duplicate Package(s):\n")?;
-            self.multi_ver_deps
-                .render(w, dep_mode, &self.top_level_blame, &self.dep_blame)?;
-        } else {
-            writeln!(w, "{NO_DUP}No duplicate dependencies found.{NO_DUP:#}")?;
-        }
-
-        Ok(())
-    }
-
     pub fn build(
         deps: &Deps,
-        parents: &MultiVerParents,
-        mut multi_ver_deps: MultiVerDeps,
-        dep_mode: Option<DependentMode>,
+        parents: &MultiVerDepParents,
+        multi_ver_deps: MultiVerDeps,
         blame_mode: Option<BlameMode>,
     ) -> Result<Self, String> {
-        let mut top_level_blame = ParentMultiVerBlame::default();
-        let mut dep_blame = ParentMultiVerBlame::default();
+        let mut top_level_blame = MultiVerDepBlame::default();
+        let mut dep_blame = MultiVerDepBlame::default();
 
-        if dep_mode.is_some() || blame_mode.is_some() {
-            for (name, mv_dep) in multi_ver_deps.iter_mut() {
-                for (version, dt_parents) in mv_dep.versions_mut() {
-                    let pkg = Package {
-                        name: name.clone(),
-                        version: version.clone(),
-                    };
+        if let Some(blame_mode) = blame_mode {
+            let top_level_iter = deps.top_level_iter();
+            let capacity = match blame_mode {
+                // # of top level packages
+                BlameMode::TopLevel => top_level_iter.len(),
+                // # of packages in total
+                BlameMode::All => deps.iter().len(),
+            };
+            let mut work_queue = VecDeque::with_capacity(capacity);
+            work_queue.extend(top_level_iter.map(|pkg| (pkg, true)));
 
-                    Self::process_multi_ver_dep(
-                        &pkg,
-                        dt_parents,
-                        &mut top_level_blame,
-                        &mut dep_blame,
-                        parents,
-                        deps,
-                        dep_mode,
-                        blame_mode,
-                    )?;
+            while let Some((pkg, is_top_level)) = work_queue.pop_front() {
+                // Only process if we haven't processed this before
+                // NOTE: Because it is not always obvious if something is top level or not
+                // we check both top level and dependency blame
+                if !top_level_blame.contains(pkg) && !dep_blame.contains(pkg) {
+                    let dep_ver = deps.get_version(pkg)?;
+                    let deps = dep_ver.dependencies();
+                    let blame = MultiVerDepBlameEntry::build(pkg, deps, parents);
+
+                    if is_top_level {
+                        top_level_blame.insert(pkg.clone(), blame);
+                    } else {
+                        dep_blame.insert(pkg.clone(), blame);
+                    }
+
+                    // Only keep recursing into tree if we want depenencies as well as top level
+                    if blame_mode == BlameMode::All {
+                        // Some of these MIGHT be top level, but we always process top level first
+                        // so blame will already be assigned
+                        work_queue.extend(deps.iter().map(|dep| (dep, false)));
+                    }
                 }
             }
 
             top_level_blame.sort();
             dep_blame.sort();
         }
-
-        // This will exist and need sorting regardless of modes
-        multi_ver_deps.sort();
 
         Ok(Self {
             top_level_blame,
@@ -94,154 +73,75 @@ impl MultiVerDepResults {
         })
     }
 
-    fn process_multi_ver_dep(
-        pkg: &Package,
-        dt_parents: &mut DirectDependents,
-        top_level_blame: &mut ParentMultiVerBlame,
-        dep_blame: &mut ParentMultiVerBlame,
-        parents: &MultiVerParents,
-        deps: &Deps,
-        dep_mode: Option<DependentMode>,
+    pub fn return_error(&self, blame_mode: Option<BlameMode>) -> bool {
+        match blame_mode {
+            // Only top level having direct blame is an issue
+            Some(BlameMode::TopLevel) => self.top_level_blame.has_direct_blame(),
+            // Either top level or dependencies having direct blame is an issue
+            Some(BlameMode::All) => {
+                self.top_level_blame.has_direct_blame() || self.dep_blame.has_direct_blame()
+            }
+            // No blame mode we just care if we have any multi version dependencies
+            _ => !self.multi_ver_deps.is_empty(),
+        }
+    }
+
+    pub fn render<W: std::fmt::Write>(
+        &self,
+        w: &mut W,
+        count: usize,
         blame_mode: Option<BlameMode>,
-    ) -> Result<(), String> {
-        fn next(
-            curr_pkg: &Package,
-            prev_pkg: &Package,
-            direct_tl_dep_pkg: Option<(&Package, Option<(&Package, Option<&Package>)>)>,
-            deps: &Deps,
-            parents: &MultiVerParents,
-            dt_parents: &mut DirectDependents,
-            top_level_blame: &mut ParentMultiVerBlame,
-            dep_blame: &mut ParentMultiVerBlame,
-            dep_mode: Option<DependentMode>,
-            blame_mode: Option<BlameMode>,
-        ) -> Result<(), String> {
-            let dep_ver = deps.get_version(curr_pkg)?;
-            let top_level = dep_ver.is_top_level();
+        blame_detail: bool,
+    ) -> std::fmt::Result {
+        if !self.multi_ver_deps.is_empty() {
+            writeln!(w, "Duplicate Package(s):\n")?;
+            writeln!(w, "{}", self.multi_ver_deps)?;
 
             if blame_mode.is_some() {
-                let processed = if top_level {
-                    top_level_blame.contains(curr_pkg)
-                } else {
-                    dep_blame.contains(curr_pkg)
-                };
-
-                // This package may have been processed already by another multi version dependency
-                if !processed {
-                    // Multi version deps if bottom rung may not themselves have this structure
-                    if let Some(multi_ver_deps) =
-                        parents.get_multi_ver_deps(&curr_pkg.name, &curr_pkg.version)
-                    {
-                        let mut parent_multi_ver_deps = ParentBlameEntry::default();
-
-                        // We only iterate over the dep if this immediate parent has multiple versions downstream
-                        for (name, versions) in multi_ver_deps.multi_ver_iter() {
-                            // Find out if any of our dependencies have all the versions
-                            let has_all = dep_ver
-                                .dependencies()
-                                .iter()
-                                .filter_map(|dep| {
-                                    parents.get_multi_ver_deps(&dep.name, &dep.version)
-                                })
-                                .any(|deps| deps.has_all(name, versions));
-
-                            // If any single depedency has all the versions then we are only indirectly responsible else directly responsible
-                            if has_all {
-                                parent_multi_ver_deps.add_indirect(name.clone());
-                            } else {
-                                parent_multi_ver_deps.add_direct(name.clone());
-                            }
-                        }
-
-                        if top_level {
-                            top_level_blame.insert(curr_pkg.clone(), parent_multi_ver_deps);
-                        } else {
-                            dep_blame.insert(curr_pkg.clone(), parent_multi_ver_deps);
-                        }
-                    }
-                }
+                writeln!(w, "Top Level Blame:\n")?;
+                self.top_level_blame.render(w, blame_detail)?;
             }
 
-            if top_level && dep_mode.is_some() {
-                let (direct_tl_dep_pkg, store) = match direct_tl_dep_pkg {
-                    // Most typical case. curr_pkg != prev_pkg. direct_pkg may or may not equal prev_pkg
-                    Some((direct_pkg, None)) => {
-                        // if true, our hierarchy is more than 2 levels deep
-                        let pkg_deps = if direct_pkg != curr_pkg {
-                            // if true, our hierarchy is more than 3 levels deep
-                            if direct_pkg != prev_pkg {
-                                Some((direct_pkg, Some((prev_pkg, Some(curr_pkg)))))
-                            } else {
-                                Some((direct_pkg, Some((curr_pkg, None))))
-                            }
-                        } else {
-                            Some((curr_pkg, None))
-                        };
-
-                        (pkg_deps, true)
-                    }
-
-                    // This occurs when we have a top level package that also has top level dependents
-                    // We are already done at this point
-                    pkg_deps @ Some((_, Some(_))) => (pkg_deps, false),
-
-                    // This only happens if a single level with no dependents (curr_pkg == prev_pkg == dependent_pkg)
-                    None => (Some((curr_pkg, None)), true),
-                };
-
-                // If storing, store one level at a time based on how many levels we built
-                if store {
-                    if let Some((direct, rest)) = direct_tl_dep_pkg {
-                        let top_level_deps = dt_parents.add(direct.clone());
-
-                        if let Some((top_level_dep, rest)) = rest {
-                            let top_level = top_level_deps.add(top_level_dep.clone());
-
-                            if let Some(top_level_pkg) = rest {
-                                top_level.add(top_level_pkg.clone());
-                            }
-                        }
-                    }
-                }
+            if let Some(BlameMode::All) = blame_mode {
+                writeln!(w, "\nDependency Blame:\n")?;
+                self.dep_blame.render(w, blame_detail)?;
             }
 
-            // Keep processing up stream until we reach the top level
-            for dependent_pkg in dep_ver.dependents() {
-                // If direct dep isn't yet set then it is the dependent we are about to process
-                let direct_tl_dep_pkg = direct_tl_dep_pkg.or(Some((dependent_pkg, None)));
+            writeln!(w, "\nSummary:\n")?;
 
-                next(
-                    dependent_pkg,
-                    curr_pkg,
-                    direct_tl_dep_pkg,
-                    deps,
-                    parents,
-                    dt_parents,
-                    top_level_blame,
-                    dep_blame,
-                    dep_mode,
-                    blame_mode,
+            writeln!(
+                w,
+                "{} duplicate out of {} total package(s) ({} duplicate versions)",
+                self.multi_ver_deps.dup_pkg_count(),
+                count,
+                self.multi_ver_deps.dup_ver_count(),
+            )?;
+
+            if blame_mode.is_some() {
+                writeln!(
+                    w,
+                    "{} top level package(s) to blame ({} directly, {} indirectly, {} both)",
+                    self.top_level_blame.count(),
+                    self.top_level_blame.direct_count(),
+                    self.top_level_blame.indirect_count(),
+                    self.top_level_blame.both_count()
                 )?;
             }
 
-            Ok(())
+            if let Some(BlameMode::All) = blame_mode {
+                writeln!(
+                    w,
+                    "{} dependency package(s) to blame ({} directly, {} indirectly, {} both)",
+                    self.dep_blame.count(),
+                    self.dep_blame.direct_count(),
+                    self.dep_blame.indirect_count(),
+                    self.dep_blame.both_count()
+                )?;
+            }
+        } else {
+            writeln!(w, "{NO_DUP}No duplicate dependencies found.{NO_DUP:#}")?;
         }
 
-        next(
-            pkg,
-            pkg,
-            None,
-            deps,
-            parents,
-            dt_parents,
-            top_level_blame,
-            dep_blame,
-            dep_mode,
-            blame_mode,
-        )
-    }
-
-    pub fn has_multi_ver_deps(&self) -> bool {
-        !self.multi_ver_deps.is_empty()
+        Ok(())
     }
 }

@@ -14,35 +14,15 @@ pub(crate) mod results;
 
 pub use dep_tree::*;
 pub use multi_ver_deps::MultiVerDeps;
-pub use multi_ver_parents::MultiVerParents;
+pub use multi_ver_parents::MultiVerDepParents;
 pub use results::MultiVerDepResults;
 
 // FIXME: Pulls in  clap dependency into library - not ideal, but works for now
-#[derive(Copy, Clone, ValueEnum)]
-pub enum DependentMode {
-    /// Display direct dependents of multi version dependencies
-    Direct,
-    /// Display top level dependencies and direct dependents of multi version dependencies
-    Dependency,
-    /// Display top level, top level dependencies, and direct dependents of multi version dependencies
-    All,
-}
-
-// FIXME: Pulls in  clap dependency into library - not ideal, but works for now
-#[derive(Copy, Clone, ValueEnum)]
+#[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
 pub enum BlameMode {
     /// Display top level packages that are directly or indirectly to blame for multi version dependencies
     TopLevel,
     /// Display top level and any dependencies that are directly or indirectly to blame for multi version dependencies
-    All,
-}
-
-// FIXME: Pulls in  clap dependency into library - not ideal, but works for now
-#[derive(Copy, Clone, ValueEnum)]
-pub enum BlamePkgMode {
-    /// Display multi version dependency names that the package is directly respnosible for
-    Direct,
-    /// Display multi version dependency names that the package is directly or indirectly respnosible for
     All,
 }
 

@@ -1,7 +1,5 @@
 use anstream::println;
-use cargo_depcheck::{
-    BlameMode, BlamePkgMode, DependentMode, Deps, MultiVerDepResults, MultiVerDeps, MultiVerParents,
-};
+use cargo_depcheck::{BlameMode, Deps, MultiVerDepParents, MultiVerDepResults, MultiVerDeps};
 use cargo_lock::Lockfile;
 use clap::Parser;
 
@@ -22,24 +20,21 @@ struct CargoCli {
     #[arg(long, short)]
     lock_path: Option<std::path::PathBuf>,
 
-    /// Display package dependents for multi version dependencies
-    #[arg(long, short, value_enum)]
-    dependents: Option<DependentMode>,
-
     /// Display packages that are to blame for multi version dependencies
     #[arg(long, short, value_enum)]
     blame: Option<BlameMode>,
 
     /// Display the multi version dependency names that each package is responsible for
-    #[arg(long, short = 'p')]
-    blame_packages: Option<BlamePkgMode>,
+    #[arg(long, short = 'd')]
+    blame_detail: bool,
 }
 
 fn load_and_process_lock_file(
-    cli: CargoCli,
+    cli: &CargoCli,
 ) -> Result<(MultiVerDepResults, String), Box<dyn std::error::Error>> {
     let lock_path = cli
         .lock_path
+        .clone()
         .unwrap_or(std::path::PathBuf::from("Cargo.lock"));
     let lock_file = Lockfile::load(lock_path)?;
 
@@ -49,21 +44,15 @@ fn load_and_process_lock_file(
 
     // Only blame uses multi version parents, so don't build if we don't need to
     let multi_ver_parents = if cli.blame.is_some() {
-        MultiVerParents::build(&deps, &multi_ver_deps)?
+        MultiVerDepParents::build(&deps, &multi_ver_deps)?
     } else {
-        MultiVerParents::default()
+        MultiVerDepParents::default()
     };
 
-    let results = MultiVerDepResults::build(
-        &deps,
-        &multi_ver_parents,
-        multi_ver_deps,
-        cli.dependents,
-        cli.blame,
-    )?;
+    let results = MultiVerDepResults::build(&deps, &multi_ver_parents, multi_ver_deps, cli.blame)?;
 
     let mut buffer = String::with_capacity(BUFFER_SIZE);
-    results.render(&mut buffer, cli.dependents, cli.blame, cli.blame_packages)?;
+    results.render(&mut buffer, deps.count(), cli.blame, cli.blame_detail)?;
 
     Ok((results, buffer))
 }
@@ -71,11 +60,11 @@ fn load_and_process_lock_file(
 fn main() {
     let cli = CargoCli::parse();
 
-    match load_and_process_lock_file(cli) {
+    match load_and_process_lock_file(&cli) {
         Ok((dup_dep_results, buffer)) => {
             println!("{buffer}");
 
-            if dup_dep_results.has_multi_ver_deps() {
+            if dup_dep_results.return_error(cli.blame) {
                 std::process::exit(1);
             }
         }
