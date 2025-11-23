@@ -16,9 +16,9 @@ impl Deps {
         let mut deps = IndexMap::with_capacity(lock_file.packages.len());
         let mut top_level_deps = IndexSet::new();
 
-        // I can't find any examples of non-v3 lock files, so I'm not sure if this is necessary
-        if lock_file.version != ResolveVersion::V3 {
-            return Err("Only v3 lock files are supported".into());
+        // I can't find any examples of non-v3/v4 lock files, so I'm not sure if this is necessary
+        if lock_file.version != ResolveVersion::V3 && lock_file.version != ResolveVersion::V4 {
+            return Err("Only v3/v4 lock files are supported".into());
         }
 
         for package in lock_file.packages {
